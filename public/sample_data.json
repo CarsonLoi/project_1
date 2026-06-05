@@ -1,0 +1,116 @@
+{
+  "_schema": {
+    "description": "Sample input data for Baccarat Trend-Seeker dashboard. Two top-level arrays: `tables` (static floor layout) and `hands` (hand-by-hand events). The dashboard groups hands by (table_id, minute bucket) to build per-minute animation frames.",
+    "tables": {
+      "id": "integer, primary key, unique within the floor",
+      "label": "string, short display name e.g. 'T01'",
+      "pit": "string, pit code A/B/C/D",
+      "pit_label": "string, full pit name e.g. 'Pit A · Mass'",
+      "x": "number, x coordinate on the floor (0 ≤ x ≤ 1400)",
+      "y": "number, y coordinate on the floor (0 ≤ y ≤ 900)",
+      "min": "number, table minimum bet in USD"
+    },
+    "hands": {
+      "hand_id": "integer, globally unique sequential id",
+      "table_id": "integer, foreign key → tables.id",
+      "shoe_id": "integer, increments per fresh shoe at the table",
+      "shoe_hand": "integer, 1-indexed position of this hand within the shoe (1..~70)",
+      "hand_time": "ISO-8601 timestamp when the hand was dealt",
+      "result": "string, 'B' (Banker) or 'P' (Player). Ties should be filtered out before sending.",
+      "headcount": "integer 0..7, number of seated players at this hand",
+      "avg_bet": "number, mean bet amount placed on this hand (USD)"
+    },
+    "notes": [
+      "The dashboard derives the trailing trend (surprise, period, motif, broken_flag) client-side using the anchored DTP algorithm — you do NOT need to precompute those fields.",
+      "Hands within the same shoe must be in chronological order. A new shoe_id resets the trailing history.",
+      "If you only have hand_time and no shoe boundaries, group hands into shoes of ~70 hands each.",
+      "Coordinates (x, y) only matter for the floor visualization. If you don't have a layout, use the default from utils/floorLayout.js.",
+      "Tables not referenced by any hand still display on the floor (no headcount, no trend)."
+    ]
+  },
+
+  "tables": [
+    {
+      "id": 1,
+      "label": "T01",
+      "pit": "A",
+      "pit_label": "Pit A · Mass",
+      "x": 80,
+      "y": 90,
+      "min": 50
+    },
+    {
+      "id": 28,
+      "label": "T28",
+      "pit": "B",
+      "pit_label": "Pit B · Mass+",
+      "x": 970,
+      "y": 200,
+      "min": 200
+    },
+    {
+      "id": 52,
+      "label": "T52",
+      "pit": "C",
+      "pit_label": "Pit C · Premium",
+      "x": 320,
+      "y": 600,
+      "min": 500
+    },
+    {
+      "id": 64,
+      "label": "T64",
+      "pit": "D",
+      "pit_label": "Pit D · VIP",
+      "x": 800,
+      "y": 600,
+      "min": 1000
+    }
+  ],
+
+  "hands": [
+    { "hand_id": 1, "table_id": 1, "shoe_id": 1, "shoe_hand": 1, "hand_time": "2026-05-13T19:00:00Z", "result": "B", "headcount": 2, "avg_bet": 60 },
+    { "hand_id": 2, "table_id": 1, "shoe_id": 1, "shoe_hand": 2, "hand_time": "2026-05-13T19:00:55Z", "result": "B", "headcount": 2, "avg_bet": 65 },
+    { "hand_id": 3, "table_id": 1, "shoe_id": 1, "shoe_hand": 3, "hand_time": "2026-05-13T19:01:48Z", "result": "B", "headcount": 3, "avg_bet": 72 },
+    { "hand_id": 4, "table_id": 1, "shoe_id": 1, "shoe_hand": 4, "hand_time": "2026-05-13T19:02:42Z", "result": "B", "headcount": 4, "avg_bet": 88 },
+    { "hand_id": 5, "table_id": 1, "shoe_id": 1, "shoe_hand": 5, "hand_time": "2026-05-13T19:03:31Z", "result": "B", "headcount": 5, "avg_bet": 110 },
+    { "hand_id": 6, "table_id": 1, "shoe_id": 1, "shoe_hand": 6, "hand_time": "2026-05-13T19:04:24Z", "result": "B", "headcount": 6, "avg_bet": 145 },
+    { "hand_id": 7, "table_id": 1, "shoe_id": 1, "shoe_hand": 7, "hand_time": "2026-05-13T19:05:18Z", "result": "B", "headcount": 7, "avg_bet": 180 },
+    { "hand_id": 8, "table_id": 1, "shoe_id": 1, "shoe_hand": 8, "hand_time": "2026-05-13T19:06:10Z", "result": "P", "headcount": 6, "avg_bet": 95 },
+    { "hand_id": 9, "table_id": 1, "shoe_id": 1, "shoe_hand": 9, "hand_time": "2026-05-13T19:07:00Z", "result": "B", "headcount": 5, "avg_bet": 80 },
+    { "hand_id": 10, "table_id": 1, "shoe_id": 1, "shoe_hand": 10, "hand_time": "2026-05-13T19:07:52Z", "result": "B", "headcount": 4, "avg_bet": 70 },
+    { "hand_id": 11, "table_id": 1, "shoe_id": 1, "shoe_hand": 11, "hand_time": "2026-05-13T19:08:45Z", "result": "P", "headcount": 4, "avg_bet": 65 },
+    { "hand_id": 12, "table_id": 1, "shoe_id": 1, "shoe_hand": 12, "hand_time": "2026-05-13T19:09:40Z", "result": "B", "headcount": 3, "avg_bet": 60 },
+
+    { "hand_id": 101, "table_id": 28, "shoe_id": 7, "shoe_hand": 1, "hand_time": "2026-05-13T19:00:12Z", "result": "P", "headcount": 1, "avg_bet": 220 },
+    { "hand_id": 102, "table_id": 28, "shoe_id": 7, "shoe_hand": 2, "hand_time": "2026-05-13T19:01:05Z", "result": "B", "headcount": 2, "avg_bet": 240 },
+    { "hand_id": 103, "table_id": 28, "shoe_id": 7, "shoe_hand": 3, "hand_time": "2026-05-13T19:01:58Z", "result": "P", "headcount": 2, "avg_bet": 235 },
+    { "hand_id": 104, "table_id": 28, "shoe_id": 7, "shoe_hand": 4, "hand_time": "2026-05-13T19:02:50Z", "result": "B", "headcount": 3, "avg_bet": 280 },
+    { "hand_id": 105, "table_id": 28, "shoe_id": 7, "shoe_hand": 5, "hand_time": "2026-05-13T19:03:46Z", "result": "P", "headcount": 3, "avg_bet": 290 },
+    { "hand_id": 106, "table_id": 28, "shoe_id": 7, "shoe_hand": 6, "hand_time": "2026-05-13T19:04:40Z", "result": "B", "headcount": 4, "avg_bet": 320 },
+    { "hand_id": 107, "table_id": 28, "shoe_id": 7, "shoe_hand": 7, "hand_time": "2026-05-13T19:05:32Z", "result": "P", "headcount": 4, "avg_bet": 340 },
+    { "hand_id": 108, "table_id": 28, "shoe_id": 7, "shoe_hand": 8, "hand_time": "2026-05-13T19:06:25Z", "result": "B", "headcount": 5, "avg_bet": 360 },
+    { "hand_id": 109, "table_id": 28, "shoe_id": 7, "shoe_hand": 9, "hand_time": "2026-05-13T19:07:20Z", "result": "P", "headcount": 5, "avg_bet": 380 },
+    { "hand_id": 110, "table_id": 28, "shoe_id": 7, "shoe_hand": 10, "hand_time": "2026-05-13T19:08:14Z", "result": "P", "headcount": 4, "avg_bet": 220 },
+
+    { "hand_id": 201, "table_id": 52, "shoe_id": 4, "shoe_hand": 1, "hand_time": "2026-05-13T19:00:30Z", "result": "B", "headcount": 1, "avg_bet": 500 },
+    { "hand_id": 202, "table_id": 52, "shoe_id": 4, "shoe_hand": 2, "hand_time": "2026-05-13T19:01:38Z", "result": "P", "headcount": 1, "avg_bet": 520 },
+    { "hand_id": 203, "table_id": 52, "shoe_id": 4, "shoe_hand": 3, "hand_time": "2026-05-13T19:02:48Z", "result": "B", "headcount": 1, "avg_bet": 500 },
+    { "hand_id": 204, "table_id": 52, "shoe_id": 4, "shoe_hand": 4, "hand_time": "2026-05-13T19:03:55Z", "result": "B", "headcount": 2, "avg_bet": 540 },
+    { "hand_id": 205, "table_id": 52, "shoe_id": 4, "shoe_hand": 5, "hand_time": "2026-05-13T19:05:05Z", "result": "B", "headcount": 2, "avg_bet": 580 },
+    { "hand_id": 206, "table_id": 52, "shoe_id": 4, "shoe_hand": 6, "hand_time": "2026-05-13T19:06:14Z", "result": "B", "headcount": 3, "avg_bet": 640 },
+    { "hand_id": 207, "table_id": 52, "shoe_id": 4, "shoe_hand": 7, "hand_time": "2026-05-13T19:07:22Z", "result": "B", "headcount": 3, "avg_bet": 720 },
+    { "hand_id": 208, "table_id": 52, "shoe_id": 4, "shoe_hand": 8, "hand_time": "2026-05-13T19:08:30Z", "result": "B", "headcount": 4, "avg_bet": 880 },
+    { "hand_id": 209, "table_id": 52, "shoe_id": 4, "shoe_hand": 9, "hand_time": "2026-05-13T19:09:36Z", "result": "P", "headcount": 3, "avg_bet": 540 },
+
+    { "hand_id": 301, "table_id": 64, "shoe_id": 2, "shoe_hand": 1, "hand_time": "2026-05-13T19:01:00Z", "result": "B", "headcount": 0, "avg_bet": 1000 },
+    { "hand_id": 302, "table_id": 64, "shoe_id": 2, "shoe_hand": 2, "hand_time": "2026-05-13T19:02:48Z", "result": "P", "headcount": 1, "avg_bet": 1500 },
+    { "hand_id": 303, "table_id": 64, "shoe_id": 2, "shoe_hand": 3, "hand_time": "2026-05-13T19:04:36Z", "result": "B", "headcount": 1, "avg_bet": 1200 },
+    { "hand_id": 304, "table_id": 64, "shoe_id": 2, "shoe_hand": 4, "hand_time": "2026-05-13T19:06:18Z", "result": "B", "headcount": 1, "avg_bet": 1400 },
+    { "hand_id": 305, "table_id": 64, "shoe_id": 2, "shoe_hand": 5, "hand_time": "2026-05-13T19:08:10Z", "result": "B", "headcount": 2, "avg_bet": 1800 },
+    { "hand_id": 306, "table_id": 64, "shoe_id": 2, "shoe_hand": 6, "hand_time": "2026-05-13T19:10:02Z", "result": "B", "headcount": 2, "avg_bet": 2400 },
+    { "hand_id": 307, "table_id": 64, "shoe_id": 2, "shoe_hand": 7, "hand_time": "2026-05-13T19:11:55Z", "result": "B", "headcount": 3, "avg_bet": 3200 },
+    { "hand_id": 308, "table_id": 64, "shoe_id": 2, "shoe_hand": 8, "hand_time": "2026-05-13T19:13:48Z", "result": "B", "headcount": 4, "avg_bet": 5500 },
+    { "hand_id": 309, "table_id": 64, "shoe_id": 2, "shoe_hand": 9, "hand_time": "2026-05-13T19:15:38Z", "result": "P", "headcount": 3, "avg_bet": 1200 }
+  ]
+}

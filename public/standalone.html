@@ -1,0 +1,738 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Baccarat Trend-Seeker · Floor Live</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+<style>
+  :root{
+    --bg-deep:#02080f;
+    --bg-mid:#04101c;
+    --bg-soft:#082338;
+    --card:rgba(8,30,48,.7);
+    --border:rgba(122,200,220,.18);
+    --accent:#7adfff;
+    --muted:rgba(255,255,255,.55);
+    --dim:rgba(255,255,255,.4);
+    --hot:#ff2d2d;
+    --warm:#ff6b1a;
+    --warming:#f7b500;
+    --cool:#5ac8a8;
+    --broken:#7aaedf;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:#e6f7ff;background:radial-gradient(circle at 20% 0%,#0a2940 0%,var(--bg-mid) 50%,var(--bg-deep) 100%);overflow:hidden}
+  header{display:flex;align-items:center;padding:10px 24px;border-bottom:1px solid var(--border);background:rgba(4,16,28,.7);backdrop-filter:blur(8px)}
+  header .icon{font-size:22px;margin-right:10px;color:var(--accent)}
+  header h1{margin:0;font-size:16px;font-weight:700;letter-spacing:2px;line-height:1.1}
+  header .sub{font-size:11px;color:var(--muted);letter-spacing:1px;margin-top:1px}
+  header .spacer{flex:1}
+  .live-chip{background:var(--hot);color:#fff;font-weight:700;font-size:10px;padding:3px 8px;border-radius:10px;letter-spacing:1px;animation:pulse 1.6s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.55}}
+  .btn-icon{background:none;border:none;color:var(--accent);font-size:18px;margin-left:8px;cursor:pointer;padding:6px 8px;border-radius:6px}
+  .btn-icon:hover{background:rgba(122,223,255,.1)}
+
+  main{display:grid;grid-template-columns:300px 1fr 320px;gap:14px;padding:14px;height:calc(100vh - 56px);box-sizing:border-box}
+  .col{display:flex;flex-direction:column;gap:14px;min-height:0;overflow:auto}
+  .col::-webkit-scrollbar{display:none}
+  .col{scrollbar-width:none}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:12px;backdrop-filter:blur(8px)}
+  .card h3{margin:0 0 8px 0;font-size:10px;font-weight:700;letter-spacing:1.5px;color:var(--accent);text-transform:uppercase}
+
+  /* KPI cards grid */
+  .kpis{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .kpi{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:10px;position:relative;overflow:hidden}
+  .kpi .label{font-size:10px;letter-spacing:1px;color:var(--muted)}
+  .kpi .value{font-family:monospace;font-size:22px;font-weight:700;line-height:1.2;margin-top:2px}
+  .kpi .sub{font-size:10px;color:var(--dim)}
+
+  /* Legend */
+  .legend-sizes{display:flex;align-items:flex-end;justify-content:space-around;height:42px;margin-bottom:4px;padding:0 4px}
+  .legend-sizes .dot{border-radius:50%;background:rgba(122,200,220,.55);box-shadow:0 0 6px rgba(122,200,220,.55)}
+  .legend-labels{display:flex;justify-content:space-around;padding:0 4px;margin-bottom:10px}
+  .legend-labels span{font-size:9px;color:var(--muted);width:40px;text-align:center}
+  .legend-colors{display:flex;gap:2px;margin-bottom:2px}
+  .legend-colors .swatch{flex:1;height:10px;border-radius:2px}
+  .legend-ends{display:flex;justify-content:space-between;font-size:9px;color:var(--muted)}
+  .legend-foot{font-size:10px;color:var(--dim);line-height:1.4;margin-top:10px}
+  .legend-foot b{color:#cfe;font-weight:600}
+
+  /* Floor map */
+  #floor-wrap{position:relative;border:1px solid rgba(122,200,220,.22);border-radius:8px;overflow:hidden;flex:1;min-height:0;box-shadow:inset 0 0 32px rgba(122,223,255,.06)}
+  #floor-bg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+  #floor-chart{position:absolute;inset:0}
+
+  /* Time controls */
+  .timebar{display:flex;align-items:center;gap:14px;background:rgba(8,30,48,.7);border:1px solid var(--border);border-radius:8px;padding:8px 14px;backdrop-filter:blur(8px)}
+  .timebar button{background:none;border:none;color:rgba(255,255,255,.7);font-size:16px;cursor:pointer;padding:4px 8px;border-radius:4px}
+  .timebar button:hover{color:var(--accent);background:rgba(122,223,255,.1)}
+  .timebar .play{color:var(--accent);font-size:22px}
+  .timebar .clock{font-family:monospace;font-size:18px;font-weight:700;color:var(--accent);min-width:74px;text-align:center}
+  .timebar .clock-label{font-size:9px;color:var(--muted);letter-spacing:1px;text-align:center;line-height:1}
+  .timebar input[type=range]{flex:1;height:5px;accent-color:var(--accent)}
+  .speeds{display:flex;border:1px solid rgba(122,200,220,.2);border-radius:5px;overflow:hidden}
+  .speeds button{padding:2px 8px;font-size:11px;border-radius:0;color:var(--muted)}
+  .speeds button.active{background:rgba(122,223,255,.1);color:var(--accent)}
+
+  /* Hot tables */
+  #hot-list{list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:6px}
+  .hot-row{cursor:pointer;border-radius:6px;padding:6px 8px;border:1px solid transparent;transition:background-color .15s, border-color .15s}
+  .hot-row:hover{background:rgba(255,255,255,.04);border-color:rgba(122,223,255,.3)}
+  .hot-row.selected{background:rgba(122,223,255,.12);border-color:rgba(122,223,255,.5)}
+  .hot-row .top{display:flex;align-items:center;gap:6px;margin-bottom:4px}
+  .hot-row .dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+  .hot-row .label{font-weight:600;color:#fff;font-size:13px;min-width:34px}
+  .hot-row .chip{font-size:9px;background:rgba(122,223,255,.1);color:var(--accent);padding:0 5px;border-radius:6px;height:16px;line-height:16px}
+  .hot-row .spacer{flex:1}
+  .hot-row .shape{font-size:11px;font-weight:700}
+  .hot-row .bottom{display:flex;align-items:center;gap:8px}
+  .hot-row .bar{flex:1;height:4px;border-radius:2px;background:rgba(255,255,255,.06);overflow:hidden}
+  .hot-row .bar-fill{height:100%}
+  .hot-row .hc{font-family:monospace;font-size:11px;color:rgba(255,255,255,.7);min-width:28px;text-align:right}
+  .hot-row .score{font-size:10px;color:rgba(255,255,255,.45);min-width:30px;text-align:right}
+
+  /* Trend board */
+  #trend-board{display:none}
+  #trend-board.open{display:block}
+  .tb-head{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px}
+  .tb-head .title{color:var(--accent);font-weight:700;letter-spacing:1.5px;font-size:11px;text-transform:uppercase}
+  .tb-head .meta{font-size:10px;color:var(--muted);margin-top:2px}
+  .tb-head .close{cursor:pointer;color:rgba(255,255,255,.6);background:none;border:none;font-size:18px;padding:0 4px}
+  .tb-head .close:hover{color:#fff}
+  .tb-stats{display:flex;gap:6px;margin-bottom:10px}
+  .tb-stat{flex:1;background:rgba(0,0,0,.25);border:1px solid var(--border);border-radius:5px;padding:4px 6px}
+  .tb-stat .lbl{font-size:9px;letter-spacing:.5px;color:rgba(255,255,255,.5);line-height:1}
+  .tb-stat .val{font-family:monospace;font-size:12px;font-weight:700;line-height:1.2}
+  .tb-detected{padding:8px;border-radius:5px;background:rgba(255,107,26,.08);border:1px solid rgba(255,107,26,.3);font-size:13px;font-weight:700;color:var(--warm);margin-bottom:8px}
+  .tb-cool{background:rgba(59,108,158,.12);border-color:rgba(59,108,158,.4);color:#7aaedf}
+  .road-block{margin-bottom:8px}
+  .road-head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:3px}
+  .road-head .name{color:var(--accent);font-weight:700;font-size:10px;letter-spacing:1px}
+  .road-head .cn{color:var(--dim);font-size:10px;margin-left:6px}
+  .road-head .count{color:var(--dim);font-size:9px}
+  .road-grid{background:rgba(0,0,0,.35);border:1px solid rgba(122,200,220,.18);border-radius:4px;display:block}
+
+  /* Tooltip override */
+  .echarts-tooltip{background:rgba(10,22,35,.95)!important;border:1px solid rgba(122,200,220,.5)!important;color:#dff5ff!important}
+
+  /* Selection helper to hide all scrollbars cleanly */
+  body, .col {scrollbar-width:none;-ms-overflow-style:none}
+  body::-webkit-scrollbar, .col::-webkit-scrollbar{display:none}
+</style>
+</head>
+<body>
+  <header>
+    <span class="icon">♣</span>
+    <div>
+      <h1>BACCARAT TREND-SEEKER · FLOOR LIVE</h1>
+      <div class="sub">Real-time hot-trend detection · crowd-density contour · anchored DTP</div>
+    </div>
+    <div class="spacer"></div>
+    <span class="live-chip">LIVE</span>
+    <button class="btn-icon" id="btn-reseed" title="Re-simulate floor">⟳</button>
+  </header>
+
+  <main>
+    <!-- LEFT RAIL -->
+    <aside class="col">
+      <div class="kpis" id="kpis"></div>
+
+      <div class="card">
+        <h3>Size · Trend Strength</h3>
+        <div class="legend-sizes">
+          <span class="dot" style="width:6px;height:6px"></span>
+          <span class="dot" style="width:12px;height:12px"></span>
+          <span class="dot" style="width:22px;height:22px"></span>
+          <span class="dot" style="width:36px;height:36px"></span>
+        </div>
+        <div class="legend-labels"><span>0</span><span>3</span><span>6</span><span>9</span></div>
+        <h3>Color · Headcount</h3>
+        <div class="legend-colors" id="legend-colors"></div>
+        <div class="legend-ends"><span>0 empty</span><span>7 packed</span></div>
+        <div class="legend-foot"><b>Blue ring</b> = streak broke. <b>White ring</b> = hot ≥5. <b>Cyan ring</b> = selected.</div>
+      </div>
+
+      <div class="card">
+        <h3>Pit Status</h3>
+        <div id="pits"></div>
+      </div>
+    </aside>
+
+    <!-- CENTER -->
+    <section class="col">
+      <div id="floor-wrap">
+        <svg id="floor-bg" viewBox="0 0 1400 900" preserveAspectRatio="none"></svg>
+        <div id="floor-chart"></div>
+      </div>
+      <div class="timebar">
+        <button id="btn-rewind" title="Step back">⏮</button>
+        <button class="play" id="btn-play" title="Play/Pause">▶</button>
+        <button id="btn-forward" title="Step forward">⏭</button>
+        <div>
+          <div class="clock-label">FLOOR CLOCK</div>
+          <div class="clock" id="clock">19:00</div>
+        </div>
+        <input type="range" id="scrubber" min="0" max="239" value="0" />
+        <div class="speeds" id="speeds">
+          <button data-s="1">1×</button>
+          <button data-s="2" class="active">2×</button>
+          <button data-s="4">4×</button>
+          <button data-s="8">8×</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- RIGHT RAIL -->
+    <aside class="col">
+      <div class="card">
+        <h3>🔥 Live Hot Tables  <span style="float:right;color:var(--dim);font-weight:400;letter-spacing:0">click to inspect</span></h3>
+        <ul id="hot-list"></ul>
+      </div>
+      <div class="card" id="trend-board"></div>
+    </aside>
+  </main>
+
+<script>
+/* =========================================================================
+   1) Constants
+   ========================================================================= */
+const FLOOR_W = 1400, FLOOR_H = 900;
+const HEADCOUNT_PALETTE = [
+  '#3a4a5c','#4d7c8c','#3da5b8','#5ac8a8',
+  '#a4d65e','#f7b500','#ff6b1a','#ff2d2d'
+];
+const HOT_COLOR_BY_S = (s, broken) => {
+  if (broken) return '#3b6c9e';
+  if (s >= 7) return '#ff2d2d';
+  if (s >= 5) return '#ff6b1a';
+  if (s >= 3) return '#f7b500';
+  return '#5ac8a8';
+};
+const headcountColor = h => HEADCOUNT_PALETTE[Math.max(0, Math.min(7, Math.round(h)))];
+const contourColorScale = d3.scaleLinear()
+  .domain(HEADCOUNT_PALETTE.map((_,i)=>i/(HEADCOUNT_PALETTE.length-1)))
+  .range(HEADCOUNT_PALETTE)
+  .interpolate(d3.interpolateRgb)
+  .clamp(true);
+const symbolSizeForSurprise = s => 6 + Math.pow(Math.min(9, Math.max(0,s))/9, 1.5)*30;
+
+const PITS = [
+  { id:'A', label:'Pit A · Mass',    x0:80,  y0:90,  cols:6, rows:4, mins:[50,50,50,100,100,100] },
+  { id:'B', label:'Pit B · Mass+',   x0:760, y0:90,  cols:6, rows:4, mins:[100,100,200,200,300,300] },
+  { id:'C', label:'Pit C · Premium', x0:110, y0:600, cols:5, rows:3, mins:[300,300,500,500,500] },
+  { id:'D', label:'Pit D · VIP',     x0:800, y0:600, cols:4, rows:3, mins:[1000,1000,2000,5000] }
+];
+const SP_X=105, SP_Y=110;
+
+/* =========================================================================
+   2) PRNG + floor builder + trend analyzer + roadmaps + simulator
+   ========================================================================= */
+function mulberry32(seed){let t=seed>>>0;return()=>{t=(t+0x6d2b79f5)>>>0;let r=t;r=Math.imul(r^(r>>>15),r|1);r^=r+Math.imul(r^(r>>>7),r|61);return((r^(r>>>14))>>>0)/4294967296}}
+
+function buildFloor(){
+  const tables=[]; let id=1;
+  for(const p of PITS){
+    for(let r=0;r<p.rows;r++) for(let c=0;c<p.cols;c++){
+      tables.push({id,label:'T'+String(id).padStart(2,'0'),pit:p.id,pitLabel:p.label,
+        x:p.x0+c*SP_X,y:p.y0+r*SP_Y,min:p.mins[c]||50}); id++;
+    }
+  }
+  return tables;
+}
+function pitOutlines(){
+  return PITS.map(p=>({id:p.id,label:p.label,
+    x:p.x0-40,y:p.y0-40,
+    w:(p.cols-1)*SP_X+80,h:(p.rows-1)*SP_Y+80}));
+}
+
+/* ---- Anchored DTP trend analyzer ---- */
+function isCanonicalMotif(m){
+  if (m.length<=1) return true;
+  let t=0;
+  for (let i=1;i<m.length;i++) if (m[i]!==m[i-1]) { if (++t>1) return false; }
+  return true;
+}
+function shapeName(m){
+  if (!m) return '–';
+  if (m.length===1) return m==='B' ? 'Banker streak' : 'Player streak';
+  let r1=1; while(r1<m.length && m[r1]===m[0]) r1++;
+  const r2=m.length-r1;
+  if (r2===0) return m[0]==='B' ? 'Banker streak' : 'Player streak';
+  if (r1===1 && r2===1) return 'Single chop';
+  return `${r1}-${r2} pattern`;
+}
+function detectDominantPattern(s){
+  const k=s.length;
+  if (k===0) return {p:0,L:0,surprise:0,motif:'',reps:0};
+  let best={p:1,L:1,surprise:0,motif:s[k-1],reps:1};
+  for (let p=1;p<=5;p++){
+    if (p>k) break;
+    let L=p;
+    while (L<k){
+      const i=k-1-L, j=i+p;
+      if (j>=k || s[i]!==s[j]) break;
+      L++;
+    }
+    for (let tryL=L; tryL>=p; tryL--){
+      const motif=s.slice(k-tryL, k-tryL+p);
+      if (!isCanonicalMotif(motif)) continue;
+      const surprise=tryL-p, reps=tryL/p;
+      if (surprise>best.surprise || (surprise===best.surprise && reps>best.reps)){
+        best={p,L:tryL,surprise,motif,reps};
+      }
+      break;
+    }
+  }
+  return best;
+}
+function analyzeHand(hist){
+  const cur=detectDominantPattern(hist);
+  let prevS=0, prevL=0;
+  if (hist.length>=2){ const pr=detectDominantPattern(hist.slice(0,-1)); prevS=pr.surprise; prevL=pr.L; }
+  const broken = prevS>=3 && cur.surprise<3;
+  return {...cur, broken, brokenLength: broken ? prevL : 0};
+}
+
+/* ---- Roadmaps ---- */
+function buildStreaks(hands){
+  const out=[];
+  for (const h of hands){
+    if (h!=='B' && h!=='P') continue;
+    if (out.length && out[out.length-1].symbol===h) out[out.length-1].length++;
+    else out.push({symbol:h,length:1});
+  }
+  return out;
+}
+function buildRoadGrid(items, rows=6){
+  const positions=[], occupied=new Set();
+  let col=0,row=0,prev=null;
+  for (const it of items){
+    if (prev===null || it.symbol!==prev){
+      col=0; row=0; while(occupied.has(`${col},0`)) col++;
+    } else {
+      const dk=`${col},${row+1}`;
+      if (row+1<rows && !occupied.has(dk)) row++;
+      else { col++; while(occupied.has(`${col},${row}`)) col++; }
+    }
+    occupied.add(`${col},${row}`); positions.push({symbol:it.symbol,col,row}); prev=it.symbol;
+  }
+  let maxCol=-1; for (const p of positions) if (p.col>maxCol) maxCol=p.col;
+  return {positions, maxCol};
+}
+function deriveRoadMarks(streaks, offset){
+  const marks=[];
+  for (let s=0;s<streaks.length;s++){
+    const len=streaks[s].length;
+    for (let r=0;r<len;r++){
+      if (r===0){
+        const prev=s-1, cmp=s-1-offset;
+        if (cmp<0) continue;
+        marks.push({symbol: streaks[prev].length===streaks[cmp].length ? 'R' : 'I'});
+      } else {
+        const cmp=s-offset;
+        if (cmp<0) continue;
+        marks.push({symbol: streaks[cmp].length>r ? 'R' : 'I'});
+      }
+    }
+  }
+  return marks;
+}
+
+/* ---- Simulator (deterministic mock) ---- */
+function generateTimeSeries({minutes=240, seed=1, startHour=19}={}){
+  const rand=mulberry32(seed);
+  const tables=buildFloor();
+  const state=tables.map(t=>({...t,history:'',shoeHistory:'',headcount:1+Math.floor(rand()*3),
+    shoeId:1,shoeHand:0,prevSurprise:0,prevLength:0}));
+  const frames=[];
+  for (let m=0;m<minutes;m++){
+    const hour=(startHour+Math.floor(m/60))%24;
+    const wave=0.55+0.45*Math.max(0,Math.cos(((hour-23)/3)*Math.PI*0.6));
+    const perTable=state.map(t=>{
+      const handProb = t.min>=1000?0.55:t.min>=300?0.75:0.9;
+      if (rand()<handProb){
+        if (t.shoeHand>=65+Math.floor(rand()*10)){ t.shoeId++; t.shoeHand=0; t.history=''; t.shoeHistory=''; }
+        let pB=0.5068; const bias=rand();
+        if (bias<0.18) pB=0.85; else if (bias<0.30) pB=0.15;
+        const flipChop=rand()<0.12 && t.history.length>0;
+        const r = flipChop ? (t.history.slice(-1)==='B'?'P':'B') : (rand()<pB?'B':'P');
+        t.history=(t.history+r).slice(-15);
+        t.shoeHistory+=r;
+        t.shoeHand++;
+      }
+      const a=analyzeHand(t.history||'B');
+      const openSeats=Math.max(0,7-t.headcount);
+      const tierDamp=1/(1+t.min/500);
+      const surpriseEffect=Math.max(0,a.surprise-2)*0.45*tierDamp;
+      const cooldown=a.broken?-0.6:0;
+      const arrLam=wave*(0.18+surpriseEffect*(openSeats/7))+cooldown;
+      const leaveProb=0.08+(a.broken?0.15:0);
+      const arrivals=rand()<arrLam ? 1+(rand()<arrLam*0.4?1:0):0;
+      const leaves=t.headcount>0 && rand()<leaveProb ? 1 : 0;
+      t.headcount=Math.max(0,Math.min(7,t.headcount+arrivals-leaves));
+      const surpriseBoost=Math.max(0,a.surprise-2)*0.14;
+      const cooldownPen=a.broken?-0.18:0;
+      const noise=0.82+rand()*0.42;
+      const avgBet=Math.max(t.min,Math.round(t.min*(1+surpriseBoost+cooldownPen)*noise));
+      const out={tableId:t.id,x:t.x,y:t.y,min:t.min,pit:t.pit,label:t.label,
+        headcount:t.headcount,history:t.history,shoeHistory:t.shoeHistory,
+        shoeId:t.shoeId,shoeHand:t.shoeHand,
+        surprise:a.surprise,period:a.p,length:a.L,motif:a.motif,
+        broken:a.broken,brokenLength:a.brokenLength,newPlayers:arrivals,avgBet};
+      t.prevSurprise=a.surprise; t.prevLength=a.L;
+      return out;
+    });
+    frames.push({minute:m,hour,perTable});
+  }
+  return {tables,frames};
+}
+
+/* =========================================================================
+   3) Floor background (SVG) — drawn once
+   ========================================================================= */
+function paintFloorBackground(){
+  const svg=document.getElementById('floor-bg');
+  const pits=pitOutlines();
+  svg.innerHTML=`
+    <defs>
+      <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#06192c"/><stop offset="50%" stop-color="#082235"/><stop offset="100%" stop-color="#05131f"/>
+      </linearGradient>
+      <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+        <path d="M40 0 H0 V40" fill="none" stroke="rgba(122,200,220,.06)" stroke-width=".5"/>
+      </pattern>
+    </defs>
+    <rect width="${FLOOR_W}" height="${FLOOR_H}" fill="url(#g)"/>
+    <rect width="${FLOOR_W}" height="${FLOOR_H}" fill="url(#grid)"/>
+    <rect x="20" y="20" width="${FLOOR_W-40}" height="${FLOOR_H-40}" fill="none" stroke="rgba(122,200,220,.12)" stroke-width="1" rx="8"/>
+    ${pits.map(p=>`
+      <g>
+        <rect x="${p.x}" y="${p.y}" width="${p.w}" height="${p.h}" fill="rgba(122,200,220,.04)" stroke="rgba(122,200,220,.25)" stroke-width="1" stroke-dasharray="4 4" rx="6"/>
+        <text x="${p.x+12}" y="${p.y+22}" fill="rgba(122,200,220,.75)" font-size="13" font-weight="700" letter-spacing="1.2">${p.label.toUpperCase()}</text>
+      </g>`).join('')}
+  `;
+}
+
+/* =========================================================================
+   4) ECharts scatter + d3 contour overlay
+   ========================================================================= */
+let chart;
+function initFloorChart(){
+  chart=echarts.init(document.getElementById('floor-chart'),'dark');
+  chart.on('click', p=>{
+    if (p.seriesType!=='scatter') return;
+    const id=p.data?.meta?.tableId;
+    if (id!=null) selectTable(id);
+  });
+  window.addEventListener('resize', ()=>chart.resize());
+}
+function renderFloor(frame){
+  if (!frame) return;
+  const sel=state.selectedId;
+  const scatterData=frame.perTable.map(p=>{
+    const isSel=p.tableId===sel;
+    const base=headcountColor(p.headcount);
+    const size=symbolSizeForSurprise(p.surprise)+(isSel?5:0);
+    let bC='rgba(255,255,255,.25)', bW=0.5;
+    if (p.broken){ bC='#7aaedf'; bW=1.8; }
+    if (p.surprise>=5){ bC='#fff'; bW=1.5; }
+    if (isSel){ bC='#7adfff'; bW=3; }
+    return {
+      value:[p.x,p.y,p.surprise,p.broken?1:0,p.headcount,p.tableId],
+      meta:p,
+      itemStyle:{color:base,borderColor:bC,borderWidth:bW,
+        shadowBlur:isSel?22:p.surprise>=5?16:4,
+        shadowColor:isSel?'#7adfff':base},
+      symbolSize:size
+    };
+  });
+  chart.setOption({
+    backgroundColor:'transparent', animation:false,
+    grid:{left:0,right:0,top:0,bottom:0,containLabel:false},
+    tooltip:{trigger:'item',
+      backgroundColor:'rgba(10,22,35,.95)',borderColor:'rgba(122,200,220,.5)',borderWidth:1,
+      padding:[10,14],textStyle:{color:'#dff5ff',fontSize:12},
+      formatter:(params)=>{
+        if (params.seriesType!=='scatter') return '';
+        const m=params.data.meta;
+        const heat = m.surprise>=5 ? `<span style="background:#ff2d2d;color:#fff;padding:1px 6px;border-radius:8px;font-size:10px;margin-left:6px">HOT</span>` :
+                     m.broken ? `<span style="background:#3b6c9e;color:#fff;padding:1px 6px;border-radius:8px;font-size:10px;margin-left:6px">COOL</span>` : '';
+        return `<div style="min-width:180px">
+          <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid rgba(255,255,255,.15);padding-bottom:6px;margin-bottom:8px">
+            <span style="font-weight:700;color:#7adfff;font-size:14px">${m.label} · Pit ${m.pit}</span>${heat}
+          </div>
+          <div style="display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:11px">
+            <span style="color:rgba(255,255,255,.55)">Min</span><span>$${m.min}</span>
+            <span style="color:rgba(255,255,255,.55)">Headcount</span><span>${m.headcount}</span>
+            <span style="color:rgba(255,255,255,.55)">Surprise</span><span>${m.surprise} bits (p=${m.period}, L=${m.length})</span>
+            <span style="color:rgba(255,255,255,.55)">Motif</span><span>${m.motif||'–'}</span>
+            <span style="color:rgba(255,255,255,.55)">History</span><span style="font-family:monospace;letter-spacing:1px">${m.history||'–'}</span>
+          </div>
+        </div>`;
+      }
+    },
+    xAxis:{type:'value',show:false,min:0,max:FLOOR_W},
+    yAxis:{type:'value',show:false,min:0,max:FLOOR_H,inverse:true},
+    series:[
+      {name:'Tables', type:'scatter', data:scatterData, symbol:'circle', z:10,
+        emphasis:{scale:1.4,itemStyle:{borderColor:'#fff',borderWidth:2}}},
+      {type:'custom', z:5, silent:true,
+        renderItem:(params,api)=>{
+          const points=frame.perTable.filter(p=>p.headcount>0).map(p=>({
+            coord:api.coord([p.x,p.y]),
+            weight:p.headcount+p.surprise*0.5
+          }));
+          if (points.length===0) return null;
+          const contours=d3.contourDensity()
+            .x(d=>d.coord[0]).y(d=>d.coord[1]).weight(d=>d.weight)
+            .size([params.coordSys.width, params.coordSys.height])
+            .bandwidth(60).thresholds(10)(points);
+          const paths=contours.map(d3.geoPath());
+          const max=Math.max(1,paths.length-1);
+          return {type:'group', children:paths.map((path,i)=>({
+            type:'path', shape:{pathData:path},
+            style:{fill:contourColorScale(i/max),stroke:'rgba(0,0,0,.18)',lineWidth:0.4,opacity:0.16+0.035*i}
+          }))};
+        },
+        data:[0]
+      }
+    ]
+  }, true);
+}
+
+/* =========================================================================
+   5) Sidebar updates
+   ========================================================================= */
+function renderKpis(frame, tables){
+  const tot=tables.length*7;
+  let crowd=0, hot=0, surTotal=0;
+  for (const p of frame.perTable){ crowd+=p.headcount; if (p.surprise>=5) hot++; surTotal+=p.surprise; }
+  const cards=[
+    {label:'LIVE CROWD', value:crowd, sub:'players on floor', color:'#7adfff'},
+    {label:'HOT TABLES', value:hot, sub:'surprise ≥ 5', color:'#ff6b1a'},
+    {label:'OPEN SEATS', value:tot-crowd, sub:`/ ${tot}`, color:'#5ac8a8'},
+    {label:'AVG SURPRISE', value:(surTotal/frame.perTable.length).toFixed(1), sub:'across floor', color:'#f7b500'}
+  ];
+  document.getElementById('kpis').innerHTML = cards.map(c=>
+    `<div class="kpi"><div class="label">${c.label}</div>
+       <div class="value" style="color:${c.color}">${c.value}</div>
+       <div class="sub">${c.sub}</div></div>`).join('');
+}
+function renderLegendColors(){
+  document.getElementById('legend-colors').innerHTML =
+    HEADCOUNT_PALETTE.map(c=>`<div class="swatch" style="background:${c};box-shadow:0 0 4px ${c}"></div>`).join('');
+}
+function renderPits(frame){
+  const grouped={};
+  for (const p of frame.perTable){
+    if (!grouped[p.pit]) grouped[p.pit]={pit:p.pit,n:0,crowd:0,hot:0};
+    grouped[p.pit].n++; grouped[p.pit].crowd+=p.headcount;
+    if (p.surprise>=5) grouped[p.pit].hot++;
+  }
+  document.getElementById('pits').innerHTML = Object.values(grouped).sort((a,b)=>a.pit.localeCompare(b.pit)).map(p=>{
+    const dots = Array.from({length:p.n}).map((_,i)=>{
+      const c = i<p.hot ? '#ff6b1a' : i<p.hot+Math.round(p.crowd/7) ? '#5ac8a8' : 'rgba(255,255,255,.1)';
+      const glow = i<p.hot ? 'box-shadow:0 0 6px rgba(255,107,26,.6);' : '';
+      return `<div style="flex:1;height:4px;border-radius:1px;background:${c};${glow}"></div>`;
+    }).join('');
+    return `<div style="margin-bottom:6px">
+      <div style="display:flex;justify-content:space-between;font-size:11px"><b>Pit ${p.pit}</b><span style="color:var(--muted)">${p.crowd} players · ${p.n} tables</span></div>
+      <div style="display:flex;gap:2px;margin-top:3px">${dots}</div>
+    </div>`;
+  }).join('');
+}
+function renderHotList(frame){
+  const hotScore = p => p.broken ? -1+p.brokenLength*0.05 : p.surprise + (p.headcount/7)*1.5;
+  const rows=frame.perTable.map(p=>({...p, score:hotScore(p)}))
+    .filter(p=>p.surprise>=3 || p.broken)
+    .sort((a,b)=>b.score-a.score)
+    .slice(0,12);
+  const compactShape = m => {
+    const n = shapeName(m);
+    if (n.endsWith(' streak')) return 'Streak ' + (n[0]==='B'?'B':'P');
+    if (n==='Single chop') return 'Chop';
+    return n.replace(' pattern','');
+  };
+  document.getElementById('hot-list').innerHTML = rows.map(r=>{
+    const c = HOT_COLOR_BY_S(r.surprise, r.broken);
+    const sel = r.tableId===state.selectedId ? 'selected' : '';
+    return `<li class="hot-row ${sel}" data-id="${r.tableId}">
+      <div class="top">
+        <span class="dot" style="background:${c};box-shadow:0 0 6px ${c}"></span>
+        <span class="label">${r.label}</span>
+        <span class="chip">$${r.min}</span>
+        <span class="spacer"></span>
+        <span class="shape" style="color:${c}">${r.broken ? `❄ broke ${r.brokenLength}` : `${compactShape(r.motif)} · s=${r.surprise}`}</span>
+      </div>
+      <div class="bottom">
+        <div class="bar"><div class="bar-fill" style="width:${Math.min(100,(r.headcount/7)*100)}%;background:${c}"></div></div>
+        <span class="hc">${r.headcount}/7</span>
+        <span class="score">${r.broken ? '–' : r.score.toFixed(1)}</span>
+      </div>
+    </li>`;
+  }).join('');
+  document.querySelectorAll('.hot-row').forEach(el=>{
+    el.addEventListener('click', ()=>selectTable(parseInt(el.dataset.id,10)));
+  });
+}
+
+/* =========================================================================
+   6) Trend board (SVG roadmaps)
+   ========================================================================= */
+function renderRoadGrid(items, {rows=6,cell=12,maxCols=24,mark='circle',colorFn}={}){
+  const {positions,maxCol}=buildRoadGrid(items,rows);
+  const total=Math.max(maxCol+1, maxCols);
+  const start=Math.max(0,total-maxCols);
+  const w=maxCols*cell, h=rows*cell, r=cell*0.36;
+  let svgLines='';
+  for (let i=0;i<=maxCols;i++) svgLines+=`<line x1="${i*cell}" y1="0" x2="${i*cell}" y2="${h}" stroke="rgba(255,255,255,.05)" stroke-width=".5"/>`;
+  for (let i=0;i<=rows;i++) svgLines+=`<line x1="0" y1="${i*cell}" x2="${w}" y2="${i*cell}" stroke="rgba(255,255,255,.05)" stroke-width=".5"/>`;
+  const visible=positions.filter(p=>p.col>=start).map(p=>({...p,col:p.col-start}));
+  const cells=visible.map(p=>{
+    const cx=p.col*cell+cell/2, cy=p.row*cell+cell/2, col=colorFn(p.symbol);
+    if (mark==='circle') return `<circle cx="${cx}" cy="${cy}" r="${r}" fill="${col}" stroke="rgba(0,0,0,.4)" stroke-width=".5"/>`;
+    if (mark==='ring')   return `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${col}" stroke-width="1.5"/>`;
+    return `<line x1="${cx-r}" y1="${cy+r}" x2="${cx+r}" y2="${cy-r}" stroke="${col}" stroke-width="1.8" stroke-linecap="round"/>`;
+  }).join('');
+  return `<svg width="${w}" height="${h}" style="background:rgba(0,0,0,.35);border:1px solid rgba(122,200,220,.18);border-radius:4px">
+    ${svgLines}${cells}</svg>`;
+}
+function renderTrendBoard(table, data){
+  const board=document.getElementById('trend-board');
+  if (!data){ board.classList.remove('open'); return; }
+  board.classList.add('open');
+  const hands=(data.shoeHistory||'').slice(-72);
+  const streaks=buildStreaks(hands);
+  const bigEye=deriveRoadMarks(streaks,1);
+  const small=deriveRoadMarks(streaks,2);
+  const cock=deriveRoadMarks(streaks,3);
+  const bp=hands.split('').reduce((a,c)=>{c==='B'?a.b++:a.p++;return a;},{b:0,p:0});
+  const hotChip = data.surprise>=5 ? `<span class="chip" style="background:#ff2d2d;color:#fff;font-weight:700">🔥 HOT</span>` :
+                  data.broken ? `<span class="chip" style="background:#3b6c9e;color:#fff;font-weight:700">❄ COOL</span>` : '';
+  const detected = data.broken ?
+    `<div class="tb-detected tb-cool">Streak just broke (${data.brokenLength} hands) — cooldown</div>` :
+    (data.surprise>=3 ? `<div class="tb-detected">${shapeName(data.motif)} · <span style="font-family:monospace;letter-spacing:1px">${data.motif}</span> · ${data.length} hands (${data.surprise} bits)</div>` : '');
+
+  board.innerHTML=`
+    <div class="tb-head">
+      <div>
+        <div class="title">TREND BOARD · ${table.label} ${hotChip}</div>
+        <div class="meta">Pit ${table.pit} · $${table.min} min · Shoe #${data.shoeId} · Hand ${data.shoeHand}</div>
+      </div>
+      <button class="close" id="tb-close">×</button>
+    </div>
+    <div class="tb-stats">
+      <div class="tb-stat"><div class="lbl">B</div><div class="val" style="color:#ff2d2d">${bp.b}</div></div>
+      <div class="tb-stat"><div class="lbl">P</div><div class="val" style="color:#3a8fd1">${bp.p}</div></div>
+      <div class="tb-stat"><div class="lbl">Headcount</div><div class="val" style="color:#7adfff">${data.headcount}/7</div></div>
+      <div class="tb-stat"><div class="lbl">Surprise</div><div class="val" style="color:${HOT_COLOR_BY_S(data.surprise,data.broken)}">${data.surprise} bits</div></div>
+    </div>
+    ${detected}
+    ${roadBlock('BIG ROAD','大路', hands.split('').map(s=>({symbol:s})),
+       {cell:13,maxCols:20,mark:'circle',colorFn:s=>s==='B'?'#ff2d2d':'#3a8fd1'})}
+    ${roadBlock('BIG EYE BOY','大眼仔', bigEye,
+       {cell:9,maxCols:28,mark:'circle',colorFn:s=>s==='R'?'#ff2d2d':'#3a8fd1'})}
+    ${roadBlock('SMALL ROAD','小路', small,
+       {cell:9,maxCols:28,mark:'ring',colorFn:s=>s==='R'?'#ff2d2d':'#3a8fd1'})}
+    ${roadBlock('COCKROACH ROAD','曱甴路', cock,
+       {cell:9,maxCols:28,mark:'slash',colorFn:s=>s==='R'?'#ff2d2d':'#3a8fd1'})}
+  `;
+  document.getElementById('tb-close').addEventListener('click', ()=>selectTable(null));
+}
+function roadBlock(name, cn, items, opts){
+  return `<div class="road-block">
+    <div class="road-head"><span><span class="name">${name}</span><span class="cn">${cn}</span></span><span class="count">${items.length} marks</span></div>
+    ${renderRoadGrid(items, opts)}
+  </div>`;
+}
+
+/* =========================================================================
+   7) Playback loop + state
+   ========================================================================= */
+const state={
+  sim:null, minute:0, playing:true, speed:2, selectedId:null, seed:1
+};
+function setMinute(m){
+  state.minute=Math.max(0, Math.min(state.sim.frames.length-1, m));
+  document.getElementById('scrubber').value=state.minute;
+  document.getElementById('clock').textContent=formatClock(state.minute);
+  redraw();
+}
+function formatClock(m){
+  const total=19*60+m;
+  return String(Math.floor(total/60)%24).padStart(2,'0')+':'+String(total%60).padStart(2,'0');
+}
+function redraw(){
+  const frame=state.sim.frames[state.minute];
+  renderFloor(frame);
+  renderKpis(frame, state.sim.tables);
+  renderPits(frame);
+  renderHotList(frame);
+  if (state.selectedId!=null){
+    const data=frame.perTable.find(p=>p.tableId===state.selectedId);
+    const table=state.sim.tables.find(t=>t.id===state.selectedId);
+    renderTrendBoard(table, data);
+  }
+}
+function selectTable(id){
+  state.selectedId=id;
+  state.playing=false;
+  updatePlayBtn();
+  if (id==null) renderTrendBoard(null,null);
+  redraw();
+}
+function updatePlayBtn(){
+  document.getElementById('btn-play').textContent = state.playing ? '❚❚' : '▶';
+}
+
+let rafId=null, lastTick=0;
+function loop(ts){
+  if (state.playing){
+    const interval = 700/state.speed;
+    if (ts-lastTick >= interval){
+      lastTick=ts;
+      setMinute((state.minute+1)%state.sim.frames.length);
+    }
+  }
+  rafId=requestAnimationFrame(loop);
+}
+
+/* =========================================================================
+   8) Boot
+   ========================================================================= */
+function boot(){
+  paintFloorBackground();
+  renderLegendColors();
+  initFloorChart();
+
+  state.sim=generateTimeSeries({minutes:240, seed:state.seed, startHour:19});
+  const scrubber=document.getElementById('scrubber');
+  scrubber.max=state.sim.frames.length-1;
+  scrubber.addEventListener('input',e=>setMinute(parseInt(e.target.value,10)));
+
+  document.getElementById('btn-play').addEventListener('click',()=>{
+    state.playing=!state.playing; updatePlayBtn();
+  });
+  document.getElementById('btn-rewind').addEventListener('click',()=>setMinute(state.minute-1));
+  document.getElementById('btn-forward').addEventListener('click',()=>setMinute(state.minute+1));
+  document.querySelectorAll('#speeds button').forEach(b=>{
+    b.addEventListener('click',()=>{
+      state.speed=parseInt(b.dataset.s,10);
+      document.querySelectorAll('#speeds button').forEach(x=>x.classList.toggle('active', x===b));
+    });
+  });
+  document.getElementById('btn-reseed').addEventListener('click',()=>{
+    state.seed++; state.sim=generateTimeSeries({minutes:240, seed:state.seed, startHour:19});
+    state.minute=0; state.selectedId=null; renderTrendBoard(null,null);
+    document.getElementById('scrubber').value=0; redraw();
+  });
+
+  setMinute(0);
+  rafId=requestAnimationFrame(loop);
+}
+window.addEventListener('DOMContentLoaded', boot);
+</script>
+</body>
+</html>
