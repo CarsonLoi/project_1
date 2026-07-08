@@ -17,7 +17,7 @@
 import React from 'react';
 import {
     Box, Stack, Typography, Button, IconButton, Tooltip, TextField,
-    Select, MenuItem, FormControl, InputLabel, ToggleButtonGroup, ToggleButton,
+    Select, MenuItem, FormControl, InputLabel, ToggleButtonGroup, ToggleButton, Checkbox, ListItemText,
 } from '@mui/material';
 import { LocalizationProvider } from '@mui/x-date-pickers/LocalizationProvider';
 import { AdapterDayjs } from '@mui/x-date-pickers/AdapterDayjs';
@@ -41,6 +41,40 @@ function shortDate(iso) {
     const d = parseInt(iso.slice(8, 10), 10);
     if (!m || !d) return iso;
     return `${SHORT_MONTHS[m - 1]} ${d}`;
+}
+
+// Compact multi-select dropdown matching the other HeaderControls fields.
+// Supports "Select all" and "Clear all" convenience items (like the
+// pricing dashboard's DropdownSelector), and shows the picked labels in
+// the trigger. Options like ['MS','PM'] or a list of sub-segment names.
+function FilterSelect({ label, value = [], onChange, options = [], width = 130 }) {
+    const handle = (e) => {
+        const v = e.target.value;
+        if (v.includes('__all__')) { onChange(options.slice()); return; }
+        if (v.includes('__clear__')) { onChange([]); return; }
+        onChange(v);
+    };
+    return (
+        <FormControl size="small" sx={{ minWidth: width, '& .MuiInputBase-root': { height: 40 } }}>
+            <InputLabel sx={{ color: 'rgba(255,255,255,0.55)' }}>{label}</InputLabel>
+            <Select
+                multiple displayEmpty
+                value={value} onChange={handle} label={label}
+                renderValue={(sel) => (sel.length === 0 ? `All ${label.toLowerCase()}` : sel.join(', '))}
+                MenuProps={{ PaperProps: { sx: { maxHeight: 380, bgcolor: 'rgba(18,22,34,0.98)', color: '#fff', border: '1px solid rgba(122,200,220,0.25)' } } }}
+                sx={{ color: '#fff', fontSize: 14 }}
+            >
+                <MenuItem value="__all__" sx={{ fontSize: 13, fontWeight: 700, color: '#7adfff', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>Select all</MenuItem>
+                <MenuItem value="__clear__" sx={{ fontSize: 13, fontWeight: 700, color: '#f7768e', borderBottom: '1px solid rgba(255,255,255,0.12)' }}>Clear all</MenuItem>
+                {options.map((o) => (
+                    <MenuItem key={o} value={o} sx={{ fontSize: 14, py: 0.2 }}>
+                        <Checkbox checked={value.includes(o)} size="small" sx={{ p: 0.4, color: 'rgba(255,255,255,0.35)', '&.Mui-checked': { color: '#7adfff' } }} />
+                        <ListItemText primary={o} sx={{ '& .MuiListItemText-primary': { fontSize: 14 } }} />
+                    </MenuItem>
+                ))}
+            </Select>
+        </FormControl>
+    );
 }
 
 export default function HeaderControls({
@@ -75,6 +109,15 @@ export default function HeaderControls({
     onExport,
     onImportFile,               // (File) => void
     onExportSpread,             // () => void — temp spread file for DB upload
+
+    // Filter slicers — Area (MS / PM), Sub-segment, Game. Purely visible
+    // state (never gate the floor's interactivity) — used to filter the
+    // Coverage report + summary counts. [] = no filter (all).
+    areaFilter = [], setAreaFilter,     // ['MS','PM']
+    subFilter  = [], setSubFilter,      // sub-segment names
+    gtFilter   = [], setGtFilter,       // gametypes
+    availableSubs = [],
+    availableGames = [],
 }) {
     const importInputRef = React.useRef(null);
 
@@ -233,6 +276,23 @@ export default function HeaderControls({
                     <MenuItem value="other">Other date…</MenuItem>
                 </Select>
             </FormControl>
+
+            {/* Filter slicers — visible state (do NOT gate the floor).
+                Drive the Coverage report + summary counts so users can
+                slice metrics by area / sub-segment / game while the floor
+                stays fully editable. */}
+            <FilterSelect
+                label="Area" value={areaFilter} onChange={setAreaFilter}
+                options={['MS', 'PM']} width={110}
+            />
+            <FilterSelect
+                label="Sub-seg" value={subFilter} onChange={setSubFilter}
+                options={availableSubs} width={140}
+            />
+            <FilterSelect
+                label="Game" value={gtFilter} onChange={setGtFilter}
+                options={availableGames} width={130}
+            />
 
             {/* App-mode toggle — sits right of the Reference dropdown so
                 the plan editor and the two-plan comparison share a row. */}

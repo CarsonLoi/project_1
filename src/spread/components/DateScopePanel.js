@@ -123,7 +123,7 @@ export default function DateScopePanel({
                     No assignments on this date yet — the calendar is browsable, but the Copy button is disabled until you assign at least one table.
                 </Box>
             )}
-                <>
+
                     {/* Month navigator */}
                     <Stack direction="row" alignItems="center" sx={{ mb: 0.8 }}>
                         <IconButton
@@ -234,8 +234,6 @@ export default function DateScopePanel({
                             ? 'Pick dates on the calendar'
                             : `Copy to ${extraDates.length} date${extraDates.length === 1 ? '' : 's'}`}
                     </Button>
-                </>
-            )}
         </Box>
     );
 }

@@ -36,6 +36,10 @@ export default function DateScopePanel({
     onApplyToDates,        // (dates: string[]) => void
     assignmentCount,
     availableDates = [],   // string[] — ISO dates that already have schedules
+    // Per-date summary from the loaded spread rows —
+    //   Map<isoDate, { openHours: number, openTables: number }>
+    // Rendered inside each calendar cell (no coverage bar per user preference).
+    dateSummary = null,
     // setTargetDate intentionally no longer used here (the header owns
     // date selection); kept in the signature so the parent's prop list
     // doesn't need to change.
@@ -105,16 +109,20 @@ export default function DateScopePanel({
                 </Typography>
             </Stack>
 
-            {nothingToCopy ? (
+            {/* Calendar always renders (functions as a monthly schedule
+                overview). The Copy button is disabled until this date has
+                assignments, so the "no assignments" note lives on the
+                button, not gating the calendar. */}
+            {nothingToCopy && (
                 <Box sx={{
-                    p: 1.4, borderRadius: 1.2,
+                    p: 1, mb: 1, borderRadius: 1.2,
                     bgcolor: 'rgba(255,255,255,0.02)',
                     border: '1px dashed rgba(255,255,255,0.1)',
-                    color: 'rgba(255,255,255,0.45)', fontSize: 13,
+                    color: 'rgba(255,255,255,0.45)', fontSize: 12,
                 }}>
-                    Assign at least one table before copying this plan to other dates.
+                    No assignments on this date yet — the calendar is browsable, but the Copy button is disabled until you assign at least one table.
                 </Box>
-            ) : (
+            )}
                 <>
                     {/* Month navigator */}
                     <Stack direction="row" alignItems="center" sx={{ mb: 0.8 }}>
@@ -165,10 +173,12 @@ export default function DateScopePanel({
                             const isSource    = cell.iso === targetDate;
                             const isSelected  = selectedSet.has(cell.iso);
                             const isScheduled = scheduledSet.has(cell.iso) && !isSource;
+                            const summary     = dateSummary ? dateSummary.get(cell.iso) : null;
                             return (
                                 <DayCell
                                     key={cell.iso}
                                     cell={cell}
+                                    summary={summary}
                                     isSource={isSource}
                                     isSelected={isSelected}
                                     isScheduled={isScheduled}
@@ -230,14 +240,13 @@ export default function DateScopePanel({
     );
 }
 
-function DayCell({ cell, isSource, isSelected, isScheduled, onClick }) {
+function DayCell({ cell, summary, isSource, isSelected, isScheduled, onClick }) {
     const base = {
         position: 'relative',
-        // Slightly shorter than square (height ≈ 76% of width) so the
-        // grid reads a touch less tall than the original 1:1 cells,
-        // while still leaving room for the under-date spread marker.
-        // (90% of the previous 0.84 ratio.)
-        aspectRatio: '1 / 0.76',
+        // Slightly taller cells now (aspect ~1:0.9) so the per-date
+        // hours + table-count summary can render below the day number
+        // without cramping. When there's a summary we go a bit taller.
+        aspectRatio: summary ? '1 / 0.95' : '1 / 0.76',
         display: 'flex', flexDirection: 'column',
         alignItems: 'center', justifyContent: 'center',
         borderRadius: 1,
@@ -275,12 +284,26 @@ function DayCell({ cell, isSource, isSelected, isScheduled, onClick }) {
     // a glance which days will receive an additional version on copy.
     const markerColor = isSelected ? 'rgba(10,26,44,0.65)' : 'rgba(247,181,0,0.95)';
 
+    // Two compact stats per cell (open-hours and open-tables) — derived
+    // upstream from the pre-loaded spreadRows so no extra fetch is needed.
+    const statColor = isSelected ? 'rgba(10,26,44,0.75)' : 'rgba(255,255,255,0.6)';
+    const statStrong = isSelected ? '#0a1a2c' : '#dff5ff';
+
     const cellEl = (
         <Box onClick={onClick} sx={{ ...base, ...style }}>
-            <Box sx={{ fontSize: 18, fontWeight: 700, lineHeight: 1 }}>
+            <Box sx={{ fontSize: 16, fontWeight: 700, lineHeight: 1 }}>
                 {cell.dayNum}
             </Box>
-            {isScheduled ? (
+            {summary ? (
+                <Stack spacing={0.1} sx={{ mt: 0.3, alignItems: 'center' }}>
+                    <Box sx={{ fontSize: 10.5, fontWeight: 800, lineHeight: 1.05, color: statStrong, fontVariantNumeric: 'tabular-nums' }}>
+                        {summary.openHours}h
+                    </Box>
+                    <Box sx={{ fontSize: 9.5, fontWeight: 700, lineHeight: 1.05, color: statColor, fontVariantNumeric: 'tabular-nums' }}>
+                        {summary.openTables}t
+                    </Box>
+                </Stack>
+            ) : isScheduled ? (
                 <Box sx={{
                     mt: 0.4,
                     px: 0.5, height: 12, minWidth: 18,
@@ -301,11 +324,17 @@ function DayCell({ cell, isSource, isSelected, isScheduled, onClick }) {
         </Box>
     );
 
+    // Tooltip text combines source/schedule state with the per-date summary
+    // so the operator sees the raw numbers on hover.
+    const summaryText = summary ? ` · ${summary.openHours} open-hours · ${summary.openTables} tables` : '';
     if (isSource) {
-        return <Tooltip title="Source date (can't copy onto itself)">{cellEl}</Tooltip>;
+        return <Tooltip title={`${cell.iso} · Source date (can't copy onto itself)${summaryText}`}>{cellEl}</Tooltip>;
     }
     if (isScheduled) {
-        return <Tooltip title="Already has a schedule — copy adds a new version">{cellEl}</Tooltip>;
+        return <Tooltip title={`${cell.iso} · Already has a schedule — copy adds a new version${summaryText}`}>{cellEl}</Tooltip>;
+    }
+    if (summary) {
+        return <Tooltip title={`${cell.iso}${summaryText}`}>{cellEl}</Tooltip>;
     }
     return cellEl;
 }

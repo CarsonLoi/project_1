@@ -40,11 +40,14 @@ import PolylineIcon from '@mui/icons-material/Polyline';
 import NearMeIcon from '@mui/icons-material/NearMe';
 import {
     gametype_svg_path,
-    SCATTER_X_MIN, SCATTER_X_MAX, SCATTER_Y_MIN, SCATTER_Y_MAX,
-    SCATTER_SYMBOL_SIZE_MULTIPLIER as SZ,
     SCATTER_GRID,
 } from '../../shared/constants/heatmapConstants';
-import { UNASSIGNED_COLOR, UNASSIGNED_LABEL, shiftLengthColor } from '../constants/defaultShifts';
+import { UNASSIGNED_COLOR, UNASSIGNED_LABEL, shiftLengthColor, shiftColorFor } from '../constants/defaultShifts';
+import {
+    PLAN_FLOOR_X_MIN, PLAN_FLOOR_X_MAX, PLAN_FLOOR_Y_MIN, PLAN_FLOOR_Y_MAX,
+    CMP_FLOOR_X_MIN, CMP_FLOOR_X_MAX, CMP_FLOOR_Y_MIN, CMP_FLOOR_Y_MAX,
+    PLAN_SYMBOL_SIZE, CMP_SYMBOL_SIZE,
+} from '../constants/floorLayout';
 import { shiftCoversHour, formatShiftRange, shiftLengthHours } from '../utils/shiftCoverage';
 
 // Two-color palette for hourly mode — green = open at this hour,
@@ -78,7 +81,22 @@ export default function FloorScheduleMap({
     // ReferenceFloorMap so the reference plan can't be edited from
     // the bottom-row read-only surface.
     readOnly = false,
+    // Native ECharts visualMap `selected` state — click a shift piece in
+    // the legend to isolate that shift (others fade). Round-tripped as an
+    // opaque map so it survives re-renders. null = all selected.
+    vmSelected,
+    onVmSelected,
+    // Layout mode selects axis-bounds / symbol-size set (planning is the
+    // big single floor, comparison is the side-by-side variance floor).
+    layoutMode = 'planning',   // 'planning' | 'comparison'
 }) {
+    // Pick the layout constants for this instance so planning and
+    // comparison can be tuned independently in floorLayout.js.
+    const SCATTER_X_MIN = layoutMode === 'comparison' ? CMP_FLOOR_X_MIN : PLAN_FLOOR_X_MIN;
+    const SCATTER_X_MAX = layoutMode === 'comparison' ? CMP_FLOOR_X_MAX : PLAN_FLOOR_X_MAX;
+    const SCATTER_Y_MIN = layoutMode === 'comparison' ? CMP_FLOOR_Y_MIN : PLAN_FLOOR_Y_MIN;
+    const SCATTER_Y_MAX = layoutMode === 'comparison' ? CMP_FLOOR_Y_MAX : PLAN_FLOOR_Y_MAX;
+    const SZ            = layoutMode === 'comparison' ? CMP_SYMBOL_SIZE : PLAN_SYMBOL_SIZE;
     const ref = useRef(null);
     const instRef = useRef(null);
     // Selection mode: 'rect' | 'polygon' | null (pointer). Owned here
@@ -88,12 +106,27 @@ export default function FloorScheduleMap({
     const [selectMode, setSelectMode] = useState(null);
     // Stable refs so chart listeners (attached once) read fresh values.
     const handlersRef = useRef({});
-    handlersRef.current = { onSelectionChange, onAssign, activeBrushShiftId, selectMode, mode, currentHour, readOnly };
+    handlersRef.current = { onSelectionChange, onAssign, activeBrushShiftId, selectMode, mode, currentHour, readOnly, onVmSelected };
 
     const shiftMap = useMemo(
         () => new Map((shifts || []).map((s) => [s.id, s])),
         [shifts]
     );
+
+    // visualMap pieces — one per shift + a synthetic 'UNASSIGNED' bucket.
+    // Colors resolved via the SHIFT_COLOR override dictionary → shift.color
+    // → UNASSIGNED_COLOR fallback. Used both to paint the pieces in the
+    // legend and (in 'overall' mode) to paint the scatter points via
+    // visualMap's inRange.color mapping.
+    const vmPieces = useMemo(() => {
+        const list = (shifts || []).map((s) => ({
+            value: s.id,
+            label: `${s.name}${s.description ? ' · ' + s.description : ''}`,
+            color: shiftColorFor(s.id, shifts),
+        }));
+        list.push({ value: '__unassigned__', label: UNASSIGNED_LABEL, color: UNASSIGNED_COLOR });
+        return list;
+    }, [shifts]);
 
     // One ECharts point per table — real SVG shape, size, rotation.
     // Fill resolution depends on `mode`:
@@ -121,9 +154,13 @@ export default function FloorScheduleMap({
                 fill = shift?.color || UNASSIGNED_COLOR;
             }
 
+            // Third value-dim = shiftId (or '__unassigned__') so the
+            // piecewise visualMap can key on it — one dedicated piece per
+            // shift lets the user click to isolate its tables.
+            const vmKey = shiftId || '__unassigned__';
             return {
                 name: t.label || t.key,
-                value: [t.x, t.y],
+                value: [t.x, t.y, vmKey],
                 symbol: svgDef ? 'path://' + svgDef.path : 'circle',
                 symbolSize: svgDef ? [svgDef.size_X * SZ, svgDef.size_Y * SZ] : 18,
                 symbolRotate: t.rotation || 0,
@@ -153,7 +190,8 @@ export default function FloorScheduleMap({
                 },
             };
         });
-    }, [tables, assignments, shiftMap, selectedKeys, mode, currentHour, colorMode]);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [tables, assignments, shiftMap, selectedKeys, mode, currentHour, colorMode, SZ]);
 
     // Init once; listeners read handlersRef so they never go stale.
     useEffect(() => {
@@ -201,8 +239,15 @@ export default function FloorScheduleMap({
             }
         };
 
+        // visualMap piece toggle — bubble the opaque `selected` map up.
+        const onVmRange = (params) => {
+            const h = handlersRef.current;
+            if (h.onVmSelected) h.onVmSelected(params.selected);
+        };
+
         inst.on('click', { seriesIndex: 0 }, onClick);
         inst.on('brushselected', onBrushSelected);
+        inst.on('datarangeselected', onVmRange);
 
         const ro = new ResizeObserver(() => requestAnimationFrame(() => inst.resize()));
         ro.observe(ref.current);
@@ -211,6 +256,7 @@ export default function FloorScheduleMap({
             ro.disconnect();
             inst.off('click', onClick);
             inst.off('brushselected', onBrushSelected);
+            inst.off('datarangeselected', onVmRange);
             inst.dispose();
             instRef.current = null;
         };
@@ -271,6 +317,24 @@ export default function FloorScheduleMap({
             // so the floor renders identically across dashboards.
             xAxis: { type: 'value', show: false, min: SCATTER_X_MIN, max: SCATTER_X_MAX },
             yAxis: { type: 'value', show: false, min: SCATTER_Y_MIN, max: SCATTER_Y_MAX, inverse: false },
+            // Shift-based visualMap legend (piecewise). Click a piece to
+            // isolate its shift's tables; the rest fade to grey. Colors
+            // come from the SHIFT_COLOR override dictionary → shift.color.
+            // The legend paints its own swatches, and (for legend clarity)
+            // reads the pieces' `color` field; the scatter's own colors
+            // are already set explicitly per-point in seriesData so the
+            // "hourly" mode's green/grey semantics stay intact.
+            visualMap: vmPieces.length ? {
+                type: 'piecewise', show: true, dimension: 2, seriesIndex: 0,
+                pieces: vmPieces.map((p) => ({ value: p.value, label: p.label, color: p.color })),
+                ...(vmSelected ? { selected: vmSelected } : {}),
+                selectedMode: 'multiple', hoverLink: false,
+                outOfRange: { colorAlpha: 0.15 },
+                left: 8, top: 8, orient: 'vertical',
+                itemWidth: 14, itemHeight: 14, itemGap: 4,
+                textStyle: { color: '#dff5ff', fontSize: 12, fontWeight: 700 },
+                backgroundColor: 'rgba(10,22,35,0.82)', borderColor: 'rgba(122,200,220,0.22)', borderWidth: 1, padding: 6,
+            } : undefined,
             // Brush is configured but the toolbox icons are hidden —
             // the mode pills below own arming/disarming via
             // takeGlobalCursor, which gives 44px touch targets instead
@@ -294,7 +358,8 @@ export default function FloorScheduleMap({
                 emphasis: { focus: 'none', scale: 1.08 },
             }],
         });
-    }, [seriesData]);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [seriesData, vmPieces, vmSelected]);
 
     // Arm / disarm the brush cursor when the mode pills change.
     useEffect(() => {

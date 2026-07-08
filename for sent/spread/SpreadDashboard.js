@@ -38,6 +38,7 @@ import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import { Box, Stack, Typography, CircularProgress } from '@mui/material';
 import SettingsIcon from '@mui/icons-material/Settings';
 import CompareArrowsIcon from '@mui/icons-material/CompareArrows';
+import HistoryIcon from '@mui/icons-material/History';
 import GridViewIcon from '@mui/icons-material/GridView';
 import CalendarMonthIcon from '@mui/icons-material/CalendarMonth';
 
@@ -57,6 +58,7 @@ import { shiftCoversHour as shiftCoversHourLocal, shiftLengthHours } from './uti
 import { deriveSpreadAssignments, expandAssignmentsToSpreadRows } from './utils/deriveScheduledShifts';
 import { fetchSpreadHours, SPREAD_LOAD_FROM } from './utils/spreadDataSource';
 import { SHIFT_LENGTH_BANDS } from './constants/defaultShifts';
+import { PLAN_FLOOR_ASPECT } from './constants/floorLayout';
 import { SPREAD_FONTS } from './constants/fontSizes';
 
 import FloorScheduleMap from './components/FloorScheduleMap';
@@ -72,6 +74,7 @@ import DateScopePanel   from './components/DateScopePanel';
 import VersionDiff      from './components/VersionDiff';
 import PlanCompareView  from './components/PlanCompareView';
 import CoverageReport   from './components/CoverageReport';
+import HistoryComparePanel from './components/HistoryComparePanel';
 import ConfigDriftBanner from './components/ConfigDriftBanner';
 
 // Today (HKT-naïve) — used as the default target date when no schedule
@@ -161,6 +164,52 @@ export default function SpreadDashboard() {
     // (see saveNewVersion) but is never an editing surface, so there's no
     // Live/Planned toggle to confuse the planning flow.
     const floorTables = liveTables;
+
+    // ── Filter slicers ───────────────────────────────────────────────
+    // Area (MS / PM), Sub-segment, Game. These are ANALYTICAL slicers only —
+    // they filter the Coverage report + summary counts, but NEVER gate the
+    // floor's interactivity (the whole floor stays editable). [] = no filter.
+    const [areaFilter, setAreaFilter] = useState([]);
+    const [subFilter, setSubFilter]   = useState([]);
+    const [gtFilter, setGtFilter]     = useState([]);
+    const availableSubs = useMemo(
+        () => [...new Set((floorTables || []).map((t) => t.sub_segment).filter(Boolean))].sort(),
+        [floorTables]
+    );
+    const availableGames = useMemo(
+        () => [...new Set((floorTables || []).map((t) => t.gametype).filter(Boolean))].sort(),
+        [floorTables]
+    );
+    const filteredTables = useMemo(() => (
+        (floorTables || []).filter((t) => (
+            (areaFilter.length === 0 || areaFilter.includes(t.segment)) &&
+            (subFilter.length === 0 || subFilter.includes(t.sub_segment)) &&
+            (gtFilter.length === 0 || gtFilter.includes(t.gametype))
+        ))
+    ), [floorTables, areaFilter, subFilter, gtFilter]);
+    const filterActive = areaFilter.length + subFilter.length + gtFilter.length > 0;
+
+    // Per-date summary from the already-loaded spreadRows — one pass, then
+    // used by the DateScopePanel calendar to show hour + table counts on
+    // each day cell. No extra fetch: this is derived from the same
+    // spreadRows the derivation and comparison already consume.
+    //   openHours  = number of (row.spread === 1) rows for that date
+    //   openTables = number of distinct tables open at least ONCE that day
+    const dateSummary = useMemo(() => {
+        const map = new Map(); // iso → { openHours, tables:Set }
+        for (const r of spreadRows || []) {
+            if (Number(r.spread) !== 1) continue;
+            const d = String(r.date).slice(0, 10);
+            if (!d) continue;
+            let e = map.get(d);
+            if (!e) { e = { openHours: 0, tables: new Set() }; map.set(d, e); }
+            e.openHours += 1;
+            e.tables.add(String(r.gametype ?? '') + '|' + String(r.table ?? ''));
+        }
+        const out = new Map();
+        for (const [d, e] of map) out.set(d, { openHours: e.openHours, openTables: e.tables.size });
+        return out;
+    }, [spreadRows]);
 
     // ── Version model ────────────────────────────────────────────────
     // v0  = the LIVE spread-DATABASE baseline for THIS date — derived from
@@ -287,6 +336,11 @@ export default function SpreadDashboard() {
     // Heatmap hourly play.
     const [viewMode, setViewMode]       = useState('overall');
     const [hourCursor, setHourCursor]   = useState(7); // scheduling day starts 07:00
+    // Native visualMap `selected` state for the shift legend (opaque ECharts
+    // map). Reset when the target date changes. Persists across other
+    // filter/mode changes.
+    const [vmShiftSel, setVmShiftSel] = useState(null);
+    useEffect(() => { setVmShiftSel(null); }, [targetDate]);
     const [playing, setPlaying]         = useState(false);
     // Overview coloring — 'shift' (each table = its shift's own color) or
     // 'length' (each table = its shift-LENGTH band: 24h / 16h / 8h / 0h).
@@ -767,6 +821,11 @@ export default function SpreadDashboard() {
                 onExport={exportStore}
                 onImportFile={importStoreFile}
                 onExportSpread={exportTempSpreadFile}
+                areaFilter={areaFilter} setAreaFilter={setAreaFilter}
+                subFilter={subFilter}   setSubFilter={setSubFilter}
+                gtFilter={gtFilter}     setGtFilter={setGtFilter}
+                availableSubs={availableSubs}
+                availableGames={availableGames}
             />
 
             {appMode === 'compare' && (
@@ -825,7 +884,7 @@ export default function SpreadDashboard() {
                     // render at the same proportions as the heatmap
                     // instead of stretching to a fixed 600px height.
                     width: '100%',
-                    aspectRatio: '1500 / 723',
+                    aspectRatio: PLAN_FLOOR_ASPECT,
                     // Anchor for the floating SelectionActionBar — it
                     // positions absolute against this card so the bulk
                     // actions hover over the floor, near the selection.
@@ -1019,6 +1078,36 @@ export default function SpreadDashboard() {
                         </Box>
                     )}
 
+                    {/* Filter status chip — shows the active slicers + a live
+                        count of matching tables. The floor itself is NOT gated
+                        by these filters; they only affect the Coverage report /
+                        summary counts (see filteredTables usage). */}
+                    {filterActive && (
+                        <Stack direction="row" spacing={0.8} alignItems="center" sx={{
+                            mb: 1, px: 1.2, py: 0.6, borderRadius: 1,
+                            bgcolor: 'rgba(122,223,255,0.10)',
+                            border: '1px solid rgba(122,223,255,0.35)',
+                            flexWrap: 'wrap', rowGap: 0.4,
+                        }}>
+                            <Typography sx={{ fontSize: 11, fontWeight: 800, letterSpacing: 0.5, color: '#7adfff', textTransform: 'uppercase' }}>Filter</Typography>
+                            {areaFilter.length > 0 && (
+                                <Typography sx={{ fontSize: 13, fontWeight: 700, color: '#dff5ff' }}>Area: {areaFilter.join(', ')}</Typography>
+                            )}
+                            {subFilter.length > 0 && (
+                                <Typography sx={{ fontSize: 13, fontWeight: 700, color: '#dff5ff' }}>· Sub-seg: {subFilter.join(', ')}</Typography>
+                            )}
+                            {gtFilter.length > 0 && (
+                                <Typography sx={{ fontSize: 13, fontWeight: 700, color: '#dff5ff' }}>· Game: {gtFilter.join(', ')}</Typography>
+                            )}
+                            <Box sx={{ flex: 1 }} />
+                            <Typography sx={{ fontSize: 12, fontWeight: 800, color: 'rgba(255,255,255,0.75)' }}>
+                                {filteredTables.length} of {floorTables.length} tables
+                            </Typography>
+                            <Box onClick={() => { setAreaFilter([]); setSubFilter([]); setGtFilter([]); }}
+                                sx={{ cursor: 'pointer', fontSize: 12, fontWeight: 700, color: '#f7768e', ml: 0.5, '&:hover': { color: '#ff98a7' } }}>Clear</Box>
+                        </Stack>
+                    )}
+
                     <FloorScheduleMap
                         tables={floorTables}
                         assignments={editingAssignments}
@@ -1030,6 +1119,9 @@ export default function SpreadDashboard() {
                         mode={viewMode}
                         currentHour={hourCursor}
                         colorMode={overallColorMode}
+                        vmSelected={vmShiftSel}
+                        onVmSelected={setVmShiftSel}
+                        layoutMode="planning"
                     />
                     {/* Floating bulk-action menu — appears whenever the
                         selection is non-empty. Assign / adjust = swatch
@@ -1059,6 +1151,7 @@ export default function SpreadDashboard() {
                         {[
                             { v: 'palette', label: 'Shifts',   icon: <GridViewIcon sx={{ fontSize: 19, mr: 0.6 }} /> },
                             { v: 'compare', label: 'Summary',  icon: <CompareArrowsIcon sx={{ fontSize: 19, mr: 0.6 }} /> },
+                            { v: 'history', label: 'History',  icon: <HistoryIcon sx={{ fontSize: 19, mr: 0.6 }} /> },
                             { v: 'apply',   label: 'Calendar', icon: <CalendarMonthIcon sx={{ fontSize: 19, mr: 0.6 }} /> },
                             { v: 'library', label: 'Settings', icon: <SettingsIcon sx={{ fontSize: 19, mr: 0.6 }} /> },
                         ].map((opt) => (
@@ -1099,6 +1192,14 @@ export default function SpreadDashboard() {
                             tables={floorTables}
                         />
                     )}
+                    {rightView === 'history' && (
+                        <HistoryComparePanel
+                            spreadRows={spreadRows}
+                            targetDate={targetDate}
+                            tables={floorTables}
+                            subSegments={availableSubs}
+                        />
+                    )}
                     {rightView === 'apply' && (
                         <DateScopePanel
                             targetDate={targetDate}
@@ -1106,6 +1207,7 @@ export default function SpreadDashboard() {
                             onApplyToDates={applyToDates}
                             assignmentCount={Object.keys(editingAssignments).length}
                             availableDates={availableDates}
+                            dateSummary={dateSummary}
                         />
                     )}
                     {rightView === 'library' && (
@@ -1173,7 +1275,7 @@ export default function SpreadDashboard() {
                     <CoverageReport
                         assignments={editingAssignments}
                         shifts={store.shifts}
-                        tables={floorTables}
+                        tables={filteredTables}
                     />
                 )}
             </Box>

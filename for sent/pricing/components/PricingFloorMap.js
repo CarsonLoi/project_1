@@ -28,9 +28,10 @@ import { Box, Typography, Stack, Tooltip } from '@mui/material';
 import HighlightAltIcon from '@mui/icons-material/HighlightAlt';
 import PolylineIcon from '@mui/icons-material/Polyline';
 import NearMeIcon from '@mui/icons-material/NearMe';
+import TuneIcon from '@mui/icons-material/Tune';
+import CloseIcon from '@mui/icons-material/Close';
 import {
     gametype_svg_path,
-    SCATTER_SYMBOL_SIZE_MULTIPLIER as SZ,
     SCATTER_GRID,
 } from '../../shared/constants/heatmapConstants';
 // Pricing floor uses its OWN axis bounds (tunable in floorLayout.js).
@@ -39,6 +40,9 @@ import {
 import {
     PLAN_FLOOR_X_MIN, PLAN_FLOOR_X_MAX, PLAN_FLOOR_Y_MIN, PLAN_FLOOR_Y_MAX,
     CMP_FLOOR_X_MIN, CMP_FLOOR_X_MAX, CMP_FLOOR_Y_MIN, CMP_FLOOR_Y_MAX,
+    PLAN_XAXIS_MIN, PLAN_XAXIS_MAX, CMP_XAXIS_MIN, CMP_XAXIS_MAX,
+    PLAN_SYMBOL_SIZE, CMP_SYMBOL_SIZE,
+    SYMBOL_SIZE_MIN, SYMBOL_SIZE_MAX, SYMBOL_SIZE_STEP,
 } from '../constants/floorLayout';
 import { UNPRICED_COLOR, formatMinimum } from '../constants/defaultTiers';
 import { readPrice } from '../utils/pricingModel';
@@ -61,6 +65,14 @@ export default function PricingFloorMap({
     readOnly = false,
     flexEnabled = true,
     changeHighlights,   // Map<tableKey, 'up'|'down'> — price-change outlines
+    // Colors for the change-highlight rectangle. Defaults match the planning
+    // dashboard convention (red = up, green = down). Comparison mode passes
+    // an inverted palette so green = higher, red = lower.
+    changeColors = { up: '#ff4d4d', down: '#46e08a' },
+    // Extra content rendered directly below the top-right date picker
+    // overlay (comparison mode uses this to slot a per-map hour dropdown
+    // when both dates match).
+    dateOverlayExtra = null,
     dimmedKeys,         // Set<tableKey> — greyed (filtered out, NOT closed)
     vmSelected,         // opaque ECharts visualMap `selected` (null = all)
     onVmSelected,       // (selected) => void
@@ -76,6 +88,25 @@ export default function PricingFloorMap({
     const SCATTER_X_MAX = mode === 'comparison' ? CMP_FLOOR_X_MAX : PLAN_FLOOR_X_MAX;
     const SCATTER_Y_MIN = mode === 'comparison' ? CMP_FLOOR_Y_MIN : PLAN_FLOOR_Y_MIN;
     const SCATTER_Y_MAX = mode === 'comparison' ? CMP_FLOOR_Y_MAX : PLAN_FLOOR_Y_MAX;
+    // Dedicated xAxis bounds — used ONLY at the ECharts xAxis definition.
+    // Kept independent from SCATTER_X_MIN/MAX so tuning the horizontal
+    // viewport doesn't shift overlay center points or anything else.
+    const XAXIS_MIN = mode === 'comparison' ? CMP_XAXIS_MIN : PLAN_XAXIS_MIN;
+    const XAXIS_MAX = mode === 'comparison' ? CMP_XAXIS_MAX : PLAN_XAXIS_MAX;
+
+    // Symbol-size multiplier — per-mode default, user-adjustable via the
+    // ⚙ Symbol size popover, persisted per mode in localStorage.
+    const defaultSize = mode === 'comparison' ? CMP_SYMBOL_SIZE : PLAN_SYMBOL_SIZE;
+    const SIZE_KEY = `pricing.symbolSize.${mode}`;
+    const [SZ, setSZ] = useState(() => {
+        try { const v = parseFloat(window.localStorage.getItem(SIZE_KEY)); return Number.isFinite(v) && v > 0 ? v : defaultSize; }
+        catch { return defaultSize; }
+    });
+    useEffect(() => {
+        try { window.localStorage.setItem(SIZE_KEY, String(SZ)); } catch { /* ignore */ }
+    }, [SIZE_KEY, SZ]);
+    const [sizePopoverOpen, setSizePopoverOpen] = useState(false);
+    const resetSize = () => setSZ(defaultSize);
 
     const ref = useRef(null);
     const instRef = useRef(null);
@@ -147,7 +178,7 @@ export default function PricingFloorMap({
             };
         });
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [tables, assignments, tierMap, priceByKey, closedKeys, fixedKeys, selectedKeys, dimmedKeys]);
+    }, [tables, assignments, tierMap, priceByKey, closedKeys, fixedKeys, selectedKeys, dimmedKeys, SZ]);
 
     // Overlay marking FIXED-price tables (locked minimum). Tables sit on a
     // regular grid, so we treat each fixed table as one grid CELL and MERGE
@@ -207,7 +238,7 @@ export default function PricingFloorMap({
             });
         }
         return { cells, halfPx };
-    }, [tables, fixedKeys]);
+    }, [tables, fixedKeys, SZ]);
 
     // Change-highlight outlines — a per-table red (price higher at the compared
     // hour) / green (lower) rounded rectangle around each changed table.
@@ -224,7 +255,7 @@ export default function PricingFloorMap({
             out.push({ cx: t.x, cy: t.y, dir, w, hh });
         }
         return out;
-    }, [changeHighlights, tables]);
+    }, [changeHighlights, tables, SZ]);
 
     // Init once; listeners read handlersRef so they never go stale.
     useEffect(() => {
@@ -344,7 +375,7 @@ export default function PricingFloorMap({
                     `;
                 },
             },
-            xAxis: { type: 'value', show: false, min: SCATTER_X_MIN, max: SCATTER_X_MAX },
+            xAxis: { type: 'value', show: false, min: XAXIS_MIN, max: XAXIS_MAX },
             yAxis: { type: 'value', show: false, min: SCATTER_Y_MIN, max: SCATTER_Y_MAX, inverse: false },
             // Table-minimum visualMap LEGEND (scatter only) — colors priced
             // tables by minimum and filters by click (deselected → greyed).
@@ -412,7 +443,7 @@ export default function PricingFloorMap({
                         const children = [];
                         for (const c of changeGeom) {
                             const p = api.coord([c.cx, c.cy]);
-                            const color = c.dir === 'up' ? '#ff4d4d' : '#46e08a';
+                            const color = c.dir === 'up' ? changeColors.up : changeColors.down;
                             children.push({
                                 type: 'rect', silent: true,
                                 shape: { x: p[0] - c.w, y: p[1] - c.hh, width: 2 * c.w, height: 2 * c.hh, r: 3 },
@@ -451,19 +482,22 @@ export default function PricingFloorMap({
             {/* Date picker — overlaid on the top-right corner of the scatter,
                 with a schedule-loaded dot. */}
             {onDateChange && (
-                <Box sx={{ position: 'absolute', top: 10, right: 10, zIndex: 6, display: 'flex', alignItems: 'center', gap: 0.7 }}>
-                    <Box component="input" type="date" value={date || ''} onChange={(e) => onDateChange(e.target.value)}
-                        sx={{
-                            display: 'block', boxSizing: 'border-box', height: 34, px: 1, fontSize: FM.dateOverlay, fontWeight: 800, fontFamily: 'inherit',
-                            color: '#fff', bgcolor: 'rgba(10,22,35,0.9)', border: '1px solid rgba(122,200,220,0.4)',
-                            borderRadius: 1.2, colorScheme: 'dark', outline: 'none', backdropFilter: 'blur(6px)',
-                            '&::-webkit-calendar-picker-indicator': { filter: 'invert(1)', opacity: 0.7, cursor: 'pointer' },
-                        }} />
-                    {scheduleLoading
-                        ? <Box sx={{ width: 11, height: 11, borderRadius: '50%', bgcolor: 'rgba(255,255,255,0.4)', flexShrink: 0 }} />
-                        : <Tooltip title={scheduleLoaded ? 'Spread schedule loaded for this date' : 'No spread schedule for this date'}>
-                            <Box sx={{ width: 11, height: 11, borderRadius: '50%', flexShrink: 0, bgcolor: scheduleLoaded ? '#5ae6b0' : 'rgba(255,255,255,0.25)', boxShadow: scheduleLoaded ? '0 0 8px rgba(90,230,176,0.8)' : 'none' }} />
-                        </Tooltip>}
+                <Box sx={{ position: 'absolute', top: 10, right: 10, zIndex: 6, display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 0.5 }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.7 }}>
+                        <Box component="input" type="date" value={date || ''} onChange={(e) => onDateChange(e.target.value)}
+                            sx={{
+                                display: 'block', boxSizing: 'border-box', height: 34, px: 1, fontSize: FM.dateOverlay, fontWeight: 800, fontFamily: 'inherit',
+                                color: '#fff', bgcolor: 'rgba(10,22,35,0.9)', border: '1px solid rgba(122,200,220,0.4)',
+                                borderRadius: 1.2, colorScheme: 'dark', outline: 'none', backdropFilter: 'blur(6px)',
+                                '&::-webkit-calendar-picker-indicator': { filter: 'invert(1)', opacity: 0.7, cursor: 'pointer' },
+                            }} />
+                        {scheduleLoading
+                            ? <Box sx={{ width: 11, height: 11, borderRadius: '50%', bgcolor: 'rgba(255,255,255,0.4)', flexShrink: 0 }} />
+                            : <Tooltip title={scheduleLoaded ? 'Spread schedule loaded for this date' : 'No spread schedule for this date'}>
+                                <Box sx={{ width: 11, height: 11, borderRadius: '50%', flexShrink: 0, bgcolor: scheduleLoaded ? '#5ae6b0' : 'rgba(255,255,255,0.25)', boxShadow: scheduleLoaded ? '0 0 8px rgba(90,230,176,0.8)' : 'none' }} />
+                            </Tooltip>}
+                    </Box>
+                    {dateOverlayExtra}
                 </Box>
             )}
 
@@ -491,6 +525,60 @@ export default function PricingFloorMap({
                         );
                     })}
                 </Stack>
+            )}
+
+            {/* ⚙ Symbol-size adjuster — top-right of the scatter (just below
+                the date overlay). Opens a slider popover that scales every
+                table icon on this floor map. Per-mode value persists. */}
+            <Tooltip title="Symbol size">
+                <Box onClick={() => setSizePopoverOpen((v) => !v)}
+                    sx={{
+                        position: 'absolute', top: 52, right: 10, zIndex: 6,
+                        width: 32, height: 32, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        cursor: 'pointer', borderRadius: 1.2,
+                        bgcolor: sizePopoverOpen ? '#7adfff' : 'rgba(10,22,35,0.9)',
+                        color: sizePopoverOpen ? '#06182a' : '#dff5ff',
+                        border: '1px solid rgba(122,200,220,0.4)', backdropFilter: 'blur(6px)',
+                        '&:hover': sizePopoverOpen ? undefined : { borderColor: 'rgba(122,223,255,0.7)' },
+                    }}>
+                    <TuneIcon sx={{ fontSize: 18 }} />
+                </Box>
+            </Tooltip>
+            {sizePopoverOpen && (
+                <Box sx={{
+                    position: 'absolute', top: 90, right: 10, zIndex: 7, width: 240,
+                    p: 1.2, borderRadius: 1.4,
+                    bgcolor: 'rgba(10,22,35,0.96)', border: '1px solid rgba(122,200,220,0.4)',
+                    boxShadow: '0 8px 24px rgba(0,0,0,0.4)', backdropFilter: 'blur(8px)',
+                }}>
+                    <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 0.8 }}>
+                        <Typography sx={{ fontSize: 12.5, fontWeight: 800, color: '#dff5ff', letterSpacing: 0.4, textTransform: 'uppercase' }}>Symbol size</Typography>
+                        <Box onClick={() => setSizePopoverOpen(false)} sx={{ cursor: 'pointer', color: 'rgba(255,255,255,0.55)', display: 'flex', '&:hover': { color: '#fff' } }}>
+                            <CloseIcon sx={{ fontSize: 16 }} />
+                        </Box>
+                    </Stack>
+                    <Stack direction="row" alignItems="center" spacing={0.8} sx={{ mb: 0.6 }}>
+                        <Typography sx={{ fontSize: 11, color: 'rgba(255,255,255,0.55)', minWidth: 32 }}>{SYMBOL_SIZE_MIN}×</Typography>
+                        <Box component="input" type="range" min={SYMBOL_SIZE_MIN} max={SYMBOL_SIZE_MAX} step={SYMBOL_SIZE_STEP} value={SZ}
+                            onChange={(e) => setSZ(parseFloat(e.target.value))}
+                            sx={{
+                                flex: 1, accentColor: '#7adfff', height: 6, cursor: 'pointer',
+                                '&::-webkit-slider-thumb': { cursor: 'pointer' },
+                            }} />
+                        <Typography sx={{ fontSize: 11, color: 'rgba(255,255,255,0.55)', minWidth: 32, textAlign: 'right' }}>{SYMBOL_SIZE_MAX}×</Typography>
+                    </Stack>
+                    <Stack direction="row" alignItems="center" justifyContent="space-between">
+                        <Typography sx={{ fontSize: 20, fontWeight: 800, color: '#7adfff', fontVariantNumeric: 'tabular-nums' }}>{SZ.toFixed(2)}×</Typography>
+                        <Stack direction="row" spacing={0.5}>
+                            <Box onClick={() => setSZ((v) => Math.max(SYMBOL_SIZE_MIN, +(v - SYMBOL_SIZE_STEP).toFixed(2)))} sx={{ cursor: 'pointer', width: 26, height: 26, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 0.8, bgcolor: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.15)', color: '#dff5ff', fontWeight: 800, '&:hover': { bgcolor: 'rgba(255,255,255,0.12)' } }}>−</Box>
+                            <Box onClick={() => setSZ((v) => Math.min(SYMBOL_SIZE_MAX, +(v + SYMBOL_SIZE_STEP).toFixed(2)))} sx={{ cursor: 'pointer', width: 26, height: 26, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 0.8, bgcolor: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.15)', color: '#dff5ff', fontWeight: 800, '&:hover': { bgcolor: 'rgba(255,255,255,0.12)' } }}>+</Box>
+                            <Box onClick={resetSize} title={`Reset to default (${defaultSize}×)`} sx={{ ml: 0.5, cursor: 'pointer', px: 0.8, height: 26, display: 'flex', alignItems: 'center', borderRadius: 0.8, bgcolor: 'rgba(122,223,255,0.12)', border: '1px solid rgba(122,223,255,0.4)', color: '#7adfff', fontSize: 11, fontWeight: 800, '&:hover': { bgcolor: 'rgba(122,223,255,0.2)' } }}>Reset</Box>
+                        </Stack>
+                    </Stack>
+                    <Typography sx={{ fontSize: 10.5, color: 'rgba(255,255,255,0.45)', mt: 0.6 }}>
+                        Default for {mode === 'comparison' ? 'comparison' : 'planning'}: {defaultSize}×
+                    </Typography>
+                </Box>
             )}
 
             {/* Legends — closed (black) tables + fixed-price overlay. Stacked

@@ -71,3 +71,26 @@ export const SHIFT_LENGTH_BANDS = [
 export function shiftLengthColor(lengthHours) {
     return SHIFT_LENGTH_COLORS[lengthHours] || UNASSIGNED_COLOR;
 }
+
+// ---------------------------------------------------------------------
+// SHIFT COLOR OVERRIDE DICTIONARY
+// ---------------------------------------------------------------------
+// Per-shift color OVERRIDES (like MIN_LABEL_COLOR in pricing). Keyed by
+// shift `id`. If an id is present here, it wins over the shift.color
+// stored in the shifts array — so you can theme the visualMap legend +
+// scatter fills without editing the store's shift definitions.
+// Leave empty to always use the shift's own configured color.
+export const SHIFT_COLOR = {
+    // A: '#custom',
+    // B1: '#custom',
+};
+
+// Resolve a shift id to its display color: dictionary override first,
+// then the shift's own `color`, finally the UNASSIGNED grey fallback.
+export function shiftColorFor(shiftId, shifts) {
+    if (shiftId && Object.prototype.hasOwnProperty.call(SHIFT_COLOR, shiftId)) {
+        return SHIFT_COLOR[shiftId];
+    }
+    const s = (shifts || []).find((x) => x.id === shiftId);
+    return (s && s.color) || UNASSIGNED_COLOR;
+}

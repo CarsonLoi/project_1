@@ -15,6 +15,13 @@ export const PLAN_FLOOR_X_MAX = 1100;
 export const PLAN_FLOOR_Y_MIN = 0;
 export const PLAN_FLOOR_Y_MAX = 1100;
 
+// Dedicated xAxis min/max for PLANNING — used ONLY at the ECharts xAxis
+// definition in PricingFloorMap. Kept separate from PLAN_FLOOR_X_MIN/MAX
+// so you can widen/tighten the horizontal viewport without touching the
+// yAxis, the overlay center points, or the box aspect ratio.
+export const PLAN_XAXIS_MIN = 0;
+export const PLAN_XAXIS_MAX = 1100;
+
 // Box aspect ratio (width / height) of the scatter container in PLANNING.
 // This is the main horizontal-stretch knob — larger = wider/flatter floor.
 //   • current look ≈ 1500 / 723 (≈ 2.075)
@@ -29,6 +36,13 @@ export const CMP_FLOOR_X_MIN = 0;
 export const CMP_FLOOR_X_MAX = 1100;
 export const CMP_FLOOR_Y_MIN = 0;
 export const CMP_FLOOR_Y_MAX = 1100;
+
+// Dedicated xAxis min/max for COMPARISON — used ONLY at the ECharts
+// xAxis definition in PricingFloorMap. Independent from CMP_FLOOR_X_MIN/MAX
+// (which drive overlay center points + backwards-compat consumers) so the
+// horizontal viewport of the comparison scatter can be tuned in isolation.
+export const CMP_XAXIS_MIN = 0;
+export const CMP_XAXIS_MAX = 1100;
 
 // Aspect ratio for each of the two comparison maps.
 export const CMP_FLOOR_ASPECT_W = 1500;
@@ -57,3 +71,14 @@ export const SUMMARY_WIDTH_FR = FLOOR_TOTAL_FR - FLOOR_WIDTH_FR;
 // In Comparison mode the floor column is narrower so a SECOND scatter map
 // fits beside the first on the same row.
 export const COMPARE_FLOOR_WIDTH_FR = 5;
+
+// ── Symbol-size multiplier (per mode) ────────────────────────────────
+// Each table symbol on the scatter is scaled by this multiplier. Planning
+// gets the larger default (bigger floor, more room), comparison gets a
+// smaller default (two maps side by side). Users can override at runtime
+// via the ⚙ symbol-size icon on the floor map (persisted in localStorage).
+export const PLAN_SYMBOL_SIZE = 2;
+export const CMP_SYMBOL_SIZE = 1.4;
+export const SYMBOL_SIZE_MIN = 0.5;
+export const SYMBOL_SIZE_MAX = 4;
+export const SYMBOL_SIZE_STEP = 0.1;
