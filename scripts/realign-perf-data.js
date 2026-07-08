@@ -94,6 +94,42 @@ function backupIfFirstRun(p) {
   }
 }
 
+// ---------- sub_segment backfill ---------------------------------------
+//
+// Production data will carry `sub_segment` as a first-class column from
+// the API. Legacy snapshots don't have it yet, so this script applies
+// the previous hardcoded pit → group rules (the exact mapping that
+// lived as PIT_LEGEND_GROUP_MAP in src/shared/constants/heatmapConstants.js
+// before the field was added) and an MS-area fallback so the bundled
+// fixture renders the legend correctly in dev mode.
+//
+// Once the API populates `sub_segment` upstream this block can be
+// deleted — the live data will already carry the field and the dashboard
+// will read it directly via the source boundary normaliser.
+const SUB_SEGMENT_BY_PIT = {
+  '871': '871', '872': '871',
+  '805': '805',
+  '888': '888', '882': '888',
+  '889': '889', '881': '889',
+  '883': '883',
+  '885': '885',
+};
+
+function deriveSubSegment(pit, area) {
+  const p = String(pit);
+  // 1. Explicit pit override (preserves the original production pit
+  //    groupings — 871/872 → '871', 882/888 → '888', etc.) if present.
+  if (SUB_SEGMENT_BY_PIT[p]) return SUB_SEGMENT_BY_PIT[p];
+  // 2. Otherwise fall back to the row's area as the column. Works for
+  //    BOTH cases: the original PIT_LEGEND_GROUP_MAP's "MS fall-through"
+  //    AND the synthetic fixture whose pits / areas don't match the
+  //    hardcoded list ("Slots", "VIP", "Main", "MSC", "PM", etc.). The
+  //    resulting legend has one column per area, which is the most
+  //    useful default when the per-pit groupings aren't known.
+  if (area) return String(area);
+  return null;
+}
+
 // ---------- daily ------------------------------------------------------
 
 function transformDaily(rows) {
@@ -109,6 +145,11 @@ function transformDaily(rows) {
       pit:             String(d.pit),
       table:           String(d.newtable),
       gametype:        d.gametype,
+      // Legend column for this row. See deriveSubSegment / the comment
+      // block above. Production data will provide this column from the
+      // API directly; this fallback keeps the bundled dev fixture
+      // rendering until the upstream backfill lands.
+      sub_segment:     deriveSubSegment(d.pit, d.area),
       // zone removed — resolved per-table from config.json.
       dow:             d.dow,
       weekstart:       (d.weekstart || '').slice(0, 10), // strip "T00:00:00"
@@ -160,6 +201,8 @@ function transformHourly(rows) {
       pit:                String(d.pit),
       table:              String(d.newtable),
       gametype:           d.gametype,
+      // Legend column — see deriveSubSegment above.
+      sub_segment:        deriveSubSegment(d.pit, d.area),
       // zone removed — resolved per-table from config.json.
       dow:                d.dow,
       weekstart:          (d.weekstart || '').slice(0, 10),

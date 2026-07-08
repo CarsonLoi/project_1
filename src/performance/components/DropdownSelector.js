@@ -1,7 +1,34 @@
 import React from 'react';
 import { FormControl, InputLabel, Select, MenuItem, OutlinedInput, Checkbox, ListItemText, Divider, Box } from '@mui/material';
+import { kpiDisplayLabel } from '../../shared/constants/heatmapConstants';
 
-const DropdownSelector = ({ label, availableOptions, selectedOptions, setSelectedOptions, multiple = true, width = 160 }) => {
+/**
+ * DropdownSelector props
+ * ----------------------
+ *   label              — text shown above the closed control
+ *   availableOptions   — string[] of all selectable values
+ *   selectedOptions    — current value (string when multiple=false; string[] when multiple=true)
+ *   setSelectedOptions — setter the parent passes in
+ *   multiple           — when true, enables the checkbox + "Select All / Clear All" UX
+ *
+ *   width              — closed-control width in px (default 160). Override when a
+ *                        toolbar slot needs the control itself to be wider.
+ *   menuWidth          — open-popup width in px. Defaults to
+ *                        `Math.max(width, 250)` so the popup never shows narrower
+ *                        than the control. Override explicitly when the control
+ *                        is narrow but the option labels are long — e.g.
+ *                        <DropdownSelector label="KPI" width={140} menuWidth={320} />.
+ */
+const DropdownSelector = ({
+    label,
+    availableOptions,
+    selectedOptions,
+    setSelectedOptions,
+    multiple = true,
+    width = 160,
+    menuWidth,
+}) => {
+    const effectiveMenuWidth = menuWidth ?? Math.max(width, 250);
 
     const handleChange = (event) => {
         const {
@@ -35,12 +62,22 @@ const DropdownSelector = ({ label, availableOptions, selectedOptions, setSelecte
                 value={selectedOptions}
                 onChange={handleChange}
                 input={<OutlinedInput label={label} sx={{ color: '#fff', '& .MuiOutlinedInput-notchedOutline': { borderColor: 'rgba(255,255,255,0.3)' } }} />}
-                renderValue={(selected) => (multiple ? selected.join(', ') : selected)}
+                renderValue={(selected) => (multiple ? selected.map(kpiDisplayLabel).join(', ') : kpiDisplayLabel(selected))}
                 MenuProps={{
                     PaperProps: {
                         style: {
-                            maxHeight: 48 * 6 + 8,
-                            width: 250,
+                            // No maxHeight cap — the dropdown grows to fit
+                            // every option without an inner scrollbar. The
+                            // viewport's own scroll handles the rare case
+                            // where the option list exceeds screen height
+                            // (MUI's Popper still clamps to viewport).
+                            //
+                            // Popup width follows the `menuWidth` prop
+                            // (falls back to max(width, 250) so the popup
+                            // is never narrower than the control). Pass
+                            // `menuWidth` explicitly when the control is
+                            // narrow but option labels are long.
+                            width: effectiveMenuWidth,
                             backgroundColor: 'rgba(50,52,72,1)',
                             color: '#fff'
                         },
@@ -59,7 +96,7 @@ const DropdownSelector = ({ label, availableOptions, selectedOptions, setSelecte
                 {availableOptions.map((option) => (
                     <MenuItem key={option} value={option} sx={{ '&.Mui-selected': { backgroundColor: 'rgba(255,255,255,0.1)' } }}>
                         {multiple && <Checkbox checked={selectedOptions.indexOf(option) > -1} sx={{ color: 'rgba(255,255,255,0.5)', '&.Mui-checked': { color: '#7aa2f7' } }} />}
-                        <ListItemText primary={option} />
+                        <ListItemText primary={kpiDisplayLabel(option)} />
                     </MenuItem>
                 ))}
             </Select>

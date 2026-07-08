@@ -5,10 +5,13 @@ import {
     SCATTER_X_MIN, SCATTER_X_MAX, SCATTER_Y_MIN, SCATTER_Y_MAX,
     SCATTER_SYMBOL_SIZE_MULTIPLIER as SZ,
     SCATTER_GRID,
+    kpiDisplayLabel,
 } from '../../shared/constants/heatmapConstants';
 import { HOURLY_KPI_REGISTRY } from '../utils/dataProcessingHourly';
+import { PERF_FONTS } from '../constants/fontSizes';
+const SF = PERF_FONTS.scatter;
 
-const ScatterHeatmapPlay = React.memo(({ dataForScatter, hourList, selectedKPI, visualMapSelected, onVisualMapSelect, onTimelineChange, onBrushSelected, selectedTables = [] }) => {
+const ScatterHeatmapPlay = React.memo(({ dataForScatter, hourList, selectedKPI, visualMapSelected, onVisualMapSelect, onTimelineChange, onBrushSelected, selectedTables = [], isSingleDay = false, dateLabel = '' }) => {
     const chartRef = useRef(null);
     const [chartInstance, setChartInstance] = useState(null);
     const internalSelectionRef = useRef([]); // To prevent loops
@@ -17,14 +20,26 @@ const ScatterHeatmapPlay = React.memo(({ dataForScatter, hourList, selectedKPI, 
     // HOURLY_KPI_REGISTRY, so the dropdown, the builder, and this map
     // can never drift. Adding a 24-hr KPI in the registry surfaces it
     // here automatically.
+    //
+    // Single-day override: the "Actual vs Spread" KPI swaps in the
+    // 4-state binary-truth-table ramp (Open / Over / Under / Close
+    // as Spread) when only one day is in scope. The dim slot is
+    // unchanged — only the threshold ramp differs — so the rest of
+    // the rendering path stays oblivious.
     const kpiConfigMap = useMemo(() => {
         const m = {};
         for (const k of Object.values(HOURLY_KPI_REGISTRY)) {
             m[k.label] = { dim: k.dim, thresholds: threshold_dict[k.thresholdKey] };
         }
+        if (isSingleDay && m['Actual vs Spread']) {
+            m['Actual vs Spread'] = {
+                ...m['Actual vs Spread'],
+                thresholds: threshold_dict['Actual vs Spread (Single Day)_hourly'],
+            };
+        }
         m.default = m['Patron Hours per table'];
         return m;
-    }, []);
+    }, [isSingleDay]);
 
     const propsRef = useRef({ dataForScatter, hourList, onBrushSelected, onVisualMapSelect, onTimelineChange, visualMapSelected });
     useEffect(() => {
@@ -167,19 +182,72 @@ const ScatterHeatmapPlay = React.memo(({ dataForScatter, hourList, selectedKPI, 
             backgroundColor: 'transparent',
             animation: false,
             timeline: {
+                // VERTICAL scrubber pinned to the RIGHT of the scatter.
+                // `inverse` makes it read top→bottom (first hour at the
+                // top). All 24 hour labels are shown (interval: 0). Only
+                // the CURRENT hour carries a marker bubble — normal ticks
+                // and already-played ticks render with no symbol, so the
+                // single checkpoint dot clearly tracks playback.
+                orient: 'vertical',
+                inverse: true,
                 axisType: 'category',
                 autoPlay: true,
                 currentIndex: preservedTimelineIdx,
                 playInterval: 1000,
-                data: hourList.map(h => `${h}:00`),
-                label: { formatter: (s) => s, fontSize: 14 },
-                bottom: 10,
-                // Disable the timeline's own tooltip — otherwise hovering
-                // a tick triggers the global scatter tooltip with the
-                // timeline label as `params.value`, rendering as
-                // "undefined" everywhere (table_label, KPI, etc).
+                data: hourList.map(h => `${String(h).padStart(2, '0')}:00`),
+                right: 14,
+                top: 26,
+                bottom: 26,
+                // Wider box (right edge fixed) so the axis line sits
+                // further right and the labels render further LEFT.
+                width: 80,
+                label: {
+                    show: true,
+                    interval: 0,                 // show every hour label
+                    position: 'left',
+                    formatter: (s) => s,
+                    fontSize: SF.timeline,
+                    fontWeight: 600,
+                    color: 'rgba(255,255,255,0.7)',
+                },
+                // No bubble on the regular ticks…
+                symbol: 'none',
+                lineStyle: { color: 'rgba(255,255,255,0.18)', width: 2 },
+                // …the only bubble is the current-hour checkpoint.
+                checkpointStyle: {
+                    symbol: 'circle',
+                    symbolSize: 18,
+                    color: '#7aa2f7',
+                    borderColor: '#fff',
+                    borderWidth: 2,
+                    shadowBlur: 8,
+                    shadowColor: 'rgba(122, 162, 247, 0.6)',
+                },
+                controlStyle: {
+                    // Bigger play / pause / step buttons.
+                    itemSize: 34,
+                    itemGap: 10,
+                    color: '#7aa2f7',
+                    borderColor: '#7aa2f7',
+                },
+                progress: {
+                    lineStyle: { color: 'rgba(122, 162, 247, 0.55)', width: 3 },
+                    // Played ticks also get no bubble — keep them clean.
+                    itemStyle: { color: 'transparent', borderColor: 'transparent' },
+                    label: {
+                        show: true, interval: 0,
+                        fontSize: SF.timeline, fontWeight: 600, color: 'rgba(255,255,255,0.7)',
+                    },
+                },
+                emphasis: {
+                    label: { color: '#fff', fontSize: SF.timeline, fontWeight: 700 },
+                    itemStyle: { color: '#9ec3ff' },
+                },
                 tooltip: { show: false }
             },
+            // Timeline OVERLAYS the scatter — keep the full plot area
+            // (no extra right padding); the vertical scrubber floats over
+            // the right edge of the map.
             grid: SCATTER_GRID,
             toolbox: {
                 feature: {
@@ -187,8 +255,8 @@ const ScatterHeatmapPlay = React.memo(({ dataForScatter, hourList, selectedKPI, 
                         type: ['rect', 'polygon', 'clear']
                     }
                 },
-                top: 20,
-                right: 20,
+                top: 12,
+                right: 110,    // clear of the vertical timeline
                 iconStyle: { borderColor: '#7aa2f7' }
             },
             brush: {
@@ -205,7 +273,7 @@ const ScatterHeatmapPlay = React.memo(({ dataForScatter, hourList, selectedKPI, 
                 borderColor: 'rgba(122, 162, 247, 0.4)',
                 borderWidth: 1,
                 padding: [10, 15],
-                textStyle: { color: '#fff', fontSize: 16 },
+                textStyle: { color: '#fff', fontSize: SF.tooltip },
                 formatter: function (params) {
                     // Guard: visualMap hoverLink (and stray internal
                     // dispatches) can invoke the formatter with a param
@@ -240,7 +308,7 @@ const ScatterHeatmapPlay = React.memo(({ dataForScatter, hourList, selectedKPI, 
                                 <div>Area: <span style="color: #fff;">${area}</span></div>
                                 <div>Pit: <span style="color: #fff;">${pit}</span></div>
                                 <div>Zone: <span style="color: #fff;">${zone}</span></div>
-                                <div>Open: <span style="color: #fff;">${(openPct * 100).toFixed(0)}%</span></div>
+                                <div>Open: <span style="color: #fff;">${(openPct || 0).toFixed(0)}%</span></div>
                                 <div style="grid-column: 1 / -1;">Status: <span style="color: ${d[29] === 2 ? '#9ece6a' : d[29] === 1 ? '#e0af68' : '#f7768e'};">${d[29] === 2 ? 'Active' : d[29] === 1 ? 'Idle' : 'Closed'}</span></div>
                             </div>
                             <div style="padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.1);">
@@ -278,7 +346,7 @@ const ScatterHeatmapPlay = React.memo(({ dataForScatter, hourList, selectedKPI, 
                                 </div>
                             </div>
                             <div style="margin-top: 8px; font-size: 13px; color: #7aa2f7; text-align: center; border-top: 1px dashed rgba(122, 162, 247, 0.2); padding-top: 4px;">
-                                Current KPI: ${selectedKPI}
+                                Current KPI: ${kpiDisplayLabel(selectedKPI)}
                             </div>
                         </div>
                     `;
@@ -311,17 +379,19 @@ const ScatterHeatmapPlay = React.memo(({ dataForScatter, hourList, selectedKPI, 
                 orient: 'vertical',
                 itemHeight: 18,
                 itemGap: 12,
-                textStyle: { color: '#fff', fontSize: 15 },
+                textStyle: { color: '#fff', fontSize: SF.visualMap },
                 selected: visualMapSelected,
                 // No highlight-on-hover — prevents stray tooltip dispatches
                 // from firing the formatter with a non-data param. Click
                 // selection still works (selectedMode 'multiple').
                 hoverLink: false,
                 selectedMode: 'multiple',
-                outOfRange: {
-                    color: '#555',
-                    opacity: 0.4
-                }
+                // Sentinel placeholders (-999999 / -1000000) fall below
+                // every threshold piece — render as definitive dim grey
+                // so "no data" tables read as muted rather than as the
+                // lowest valid bucket (which is often a dark blue and
+                // was being confused with empty).
+                outOfRange: { color: '#3a3a3a', opacity: 0.35 }
             },
             series: [{
                 name: 'Tables',
@@ -384,7 +454,13 @@ const ScatterHeatmapPlay = React.memo(({ dataForScatter, hourList, selectedKPI, 
             });
 
             return {
-                title: { text: `Hour: ${hour}:00`, textStyle: { color: '#ccc', fontSize: 20, fontWeight: 600 }, top: 20, left: 20 },
+                // Header overlay — Date (with DoW) · Hour · selected KPI.
+                title: {
+                    text: [dateLabel, `${String(hour).padStart(2, '0')}:00`, kpiDisplayLabel(selectedKPI)]
+                        .filter(Boolean).join('   ·   '),
+                    textStyle: { color: '#e6edf3', fontSize: SF.title, fontWeight: 600 },
+                    top: 16, left: 20,
+                },
                 // Re-assert visualMap (with the current `selected` map)
                 // in every frame option so its piece-selection survives
                 // timeline ticks. Without this, advancing a frame

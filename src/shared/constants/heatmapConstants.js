@@ -20,6 +20,86 @@ export const gametype_svg_path = {
 
 }
 
+// ---------------------------------------------------------------------
+// Per-area threshold overrides
+// ---------------------------------------------------------------------
+//
+// When the user filters the global Area dropdown to ONE area (currently
+// "MS" or "PM" — the two main floor segments), the visual map scale
+// switches to the area-specific ramp registered here. Multi-area or
+// zero-area selections fall back to the canonical `threshold_dict`.
+//
+// Shape:
+//   threshold_dict_byArea = {
+//     MS: { '<KPI label>': [...thresholds] },
+//     PM: { '<KPI label>': [...thresholds] },
+//   }
+//
+// Anything missing from an area's submap falls through to the default.
+// So you only need to register the KPIs whose distribution is genuinely
+// different between MS and PM (typically the per-table money KPIs —
+// premium tables run ~3-5× higher drop/win than mass tables).
+//
+// To register a new override:
+//   1. Decide the scale that matches the area's data distribution.
+//   2. Add the ramp here keyed by the exact KPI label used in
+//      `available_KPI_Map` / `available_KPI_Map_Hour`.
+//   3. The bucket labels in the ramp drive what the legend shows for
+//      that KPI on that area — keep them human-readable.
+//
+// Starting set: a couple of representative money KPIs scaled for the
+// two segments. Tune the numbers based on the actual distributions in
+// production; the structure is the contract, the magnitudes are
+// placeholders that should be tightened with real data.
+export const threshold_dict_byArea = {
+    MS: {
+        // Mass tables — placeholder; tighten with real MS distribution.
+        // For now, scale down by ~0.5× from the default so MS rows
+        // don't all collapse into the lowest bucket.
+        'Drop per floor day': [
+            { gte: 175000, lt: 99999999, color: 'rgba(255 , 0 , 0)',       label: '175k up' },
+            { gte: 150000, lt: 175000,   color: 'rgba(251 , 155 , 210)',   label: '150k - 175k' },
+            { gte: 125000, lt: 150000,   color: 'rgba(242 , 141 , 30)',    label: '125k - 150k' },
+            { gte: 100000, lt: 125000,   color: 'rgba(244 , 238 , 12)',    label: '100k - 125k' },
+            { gte:  75000, lt: 100000,   color: 'rgba(196 , 215 , 155)',   label: '75k - 100k' },
+            { gte:  50000, lt:  75000,   color: 'rgba(6 , 142 , 34)',      label: '50k - 75k' },
+            { gte:  25000, lt:  50000,   color: 'rgba(97 , 135 , 255)',    label: '25k - 50k' },
+            { gte:      0, lt:  25000,   color: 'rgba(0 , 60 , 180)',      label: '25k below' },
+        ],
+    },
+    PM: {
+        // Premium tables — placeholder; tighten with real PM distribution.
+        // ~3× the default scale so premium-table variance is visible
+        // rather than maxing every cell into the top bucket.
+        'Drop per floor day': [
+            { gte: 1050000, lt: 99999999, color: 'rgba(255 , 0 , 0)',      label: '1.05m up' },
+            { gte:  900000, lt: 1050000,  color: 'rgba(251 , 155 , 210)',  label: '900k - 1.05m' },
+            { gte:  750000, lt:  900000,  color: 'rgba(242 , 141 , 30)',   label: '750k - 900k' },
+            { gte:  600000, lt:  750000,  color: 'rgba(244 , 238 , 12)',   label: '600k - 750k' },
+            { gte:  450000, lt:  600000,  color: 'rgba(196 , 215 , 155)',  label: '450k - 600k' },
+            { gte:  300000, lt:  450000,  color: 'rgba(6 , 142 , 34)',     label: '300k - 450k' },
+            { gte:  150000, lt:  300000,  color: 'rgba(97 , 135 , 255)',   label: '150k - 300k' },
+            { gte:       0, lt:  150000,  color: 'rgba(0 , 60 , 180)',     label: '150k below' },
+        ],
+    },
+};
+
+// Resolver — returns the active thresholds for a (KPI, area-selection)
+// pair. Centralised so every consumer (scatter visualMap, legend
+// bucketing, percentile component) reads from the same source.
+//   selectedAreas: array, e.g. ['MS'] or []
+//   selectedKPI:   string
+// Returns the area-specific ramp when exactly ONE area is selected and
+// an override exists for that (area, KPI); otherwise the default ramp.
+export function thresholdsFor(selectedKPI, selectedAreas) {
+    const fallback = threshold_dict[selectedKPI];
+    if (!Array.isArray(selectedAreas) || selectedAreas.length !== 1) return fallback;
+    const area = selectedAreas[0];
+    const byArea = threshold_dict_byArea[area];
+    if (!byArea) return fallback;
+    return byArea[selectedKPI] || fallback;
+}
+
 export const threshold_dict = {
     'Drop per open day': [
         { gte: 350000, lt: 99999999, color: 'rgba(255 , 0 , 0)', label: '350k up' },
@@ -170,6 +250,20 @@ export const threshold_dict = {
     ],
 
     'Theo per floor day': [
+        { gte: 300000, lt: 99999999, color: 'rgba(255 , 0 , 0)', label: '300k above' },
+        { gte: 200000, lt: 300000, color: 'rgba(251 , 155 , 210)', label: '200k - 300k' },
+        { gte: 150000, lt: 200000, color: 'rgba(242 , 141 , 30)', label: '150k - 200k' },
+        { gte: 100000, lt: 150000, color: 'rgba(244 , 238 , 12)', label: '100k - 150k' },
+        { gte: 75000, lt: 100000, color: 'rgba(196 , 215 , 155)', label: '75k - 100k' },
+        { gte: 50000, lt: 75000, color: 'rgba(6 , 142 , 34)', label: '50k - 75k' },
+        { gte: 25000, lt: 50000, color: 'rgba(97 , 135 , 255)', label: '25k - 50k' },
+        { gte: -900000, lt: 25000, color: 'rgba(0 , 60 , 180)', label: '25k below' },
+    ],
+
+    // Theo (BA/NC) or Win (others) per floorday — shares the same money
+    // scale as Win/Theo per floorday since the numerator is one or the
+    // other depending on gametype.
+    'Theo / Win per floor day': [
         { gte: 300000, lt: 99999999, color: 'rgba(255 , 0 , 0)', label: '300k above' },
         { gte: 200000, lt: 300000, color: 'rgba(251 , 155 , 210)', label: '200k - 300k' },
         { gte: 150000, lt: 200000, color: 'rgba(242 , 141 , 30)', label: '150k - 200k' },
@@ -462,15 +556,18 @@ export const threshold_dict = {
         { gte: 0, lt: 1, color: 'rgba(231, 77, 29)', label: 'Closed' },
     ],
 
+    // Open Percentage was previously emitted on the 0..1 ratio scale
+    // (thresholds 0.0..1.0). Aligned with the rest of the percent
+    // KPIs (Active %, Occupancy %) which already used 0..100 — see the
+    // PERCENT_KPIS comment block in PerformanceDashboard.js for the
+    // full alignment story. All buckets here scaled × 100.
     'Open Percentage': [
-        //{ gte: 60, lt: 99999999, color: 'rgba(255 , 0 , 0)', label: '60 Hands+'},
-        { gte: 0.8, lt: 999999, color: 'rgba(247 , 71 , 75)', label: '80% - 100%' },
-        //{ gte: 40, lt: 50, color: 'rgba(242 , 141 , 30)', label: '40 - 50 Hands'},
-        { gte: 0.6, lt: 0.8, color: 'rgba(252 , 177 , 121)', label: '60% - 79%' },
-        { gte: 0.4, lt: 0.6, color: 'rgba(6 , 142 , 34)', label: '40% - 59%' },
-        { gte: 0.2, lt: 0.4, color: 'rgba(196 , 215 , 155)', label: '20% - 39%' },
-        { gte: 0.00001, lt: 0.2, color: 'rgba(97 , 135 , 255)', label: '1% - 19%' },
-        { gte: 0, lt: 0.00001, color: 'rgba(0 , 60 , 180)', label: 'Closed' },
+        { gte: 80,     lt: 999999,  color: 'rgba(247 , 71 , 75)',   label: '80% - 100%' },
+        { gte: 60,     lt: 80,      color: 'rgba(252 , 177 , 121)', label: '60% - 79%' },
+        { gte: 40,     lt: 60,      color: 'rgba(6 , 142 , 34)',    label: '40% - 59%' },
+        { gte: 20,     lt: 40,      color: 'rgba(196 , 215 , 155)', label: '20% - 39%' },
+        { gte: 0.001,  lt: 20,      color: 'rgba(97 , 135 , 255)',  label: '1% - 19%' },
+        { gte: 0,      lt: 0.001,   color: 'rgba(0 , 60 , 180)',    label: 'Closed' },
     ],
 
     'Open Hours_mins': [
@@ -479,9 +576,151 @@ export const threshold_dict = {
         { gte: 0, lt: 1, color: 'rgba(231, 77, 29)', label: 'Unused' },
     ],
 
+    // ============================================================
+    // SPREAD KPIs — Avg view
+    // ============================================================
+    //
+    // Spread = SCHEDULED open hours; Openhours = ACTUAL open hours.
+    // Per-floorday and per-openday ramps roughly cover 0–24 hours
+    // per floor day (the natural ceiling for a 24-hour table).
+    'Spread hours per floor day': [
+        { gte: 20, lt: 999999, color: 'rgba(255 , 0 , 0)',       label: '20+ hr' },
+        { gte: 16, lt: 20,     color: 'rgba(251 , 155 , 210)',   label: '16 - 20 hr' },
+        { gte: 12, lt: 16,     color: 'rgba(242 , 141 , 30)',    label: '12 - 16 hr' },
+        { gte:  8, lt: 12,     color: 'rgba(244 , 238 , 12)',    label: '8 - 12 hr' },
+        { gte:  4, lt:  8,     color: 'rgba(196 , 215 , 155)',   label: '4 - 8 hr' },
+        { gte:  1, lt:  4,     color: 'rgba(6 , 142 , 34)',      label: '1 - 4 hr' },
+        { gte:  0, lt:  1,     color: 'rgba(0 , 60 , 180)',      label: 'Closed' },
+    ],
+
+    'Spread hours per open day': [
+        { gte: 20, lt: 999999, color: 'rgba(255 , 0 , 0)',       label: '20+ hr' },
+        { gte: 16, lt: 20,     color: 'rgba(251 , 155 , 210)',   label: '16 - 20 hr' },
+        { gte: 12, lt: 16,     color: 'rgba(242 , 141 , 30)',    label: '12 - 16 hr' },
+        { gte:  8, lt: 12,     color: 'rgba(244 , 238 , 12)',    label: '8 - 12 hr' },
+        { gte:  4, lt:  8,     color: 'rgba(196 , 215 , 155)',   label: '4 - 8 hr' },
+        { gte:  1, lt:  4,     color: 'rgba(6 , 142 , 34)',      label: '1 - 4 hr' },
+        { gte:  0, lt:  1,     color: 'rgba(0 , 60 , 180)',      label: 'Closed' },
+    ],
+
+    // Signed variance — positive = ran longer than scheduled,
+    // negative = under-ran. Green centred on zero, red at both ends
+    // (over-run is operationally distinct from under-run; both are
+    // "off-schedule" and warrant attention). Bucket labels use "to"
+    // as the range separator (clearer than "-" which collides with
+    // the minus sign on the negative side).
+    // Key matches the Avg-view KPI dropdown id 'Actual hours vs spread'
+    // (NUMERIC_KPIS_AVG); the legend's threshold lookup is straight
+    // threshold_dict[selectedKPI] so the two MUST agree exactly. The
+    // pre-existing 'Daily Actual Hours vs. Spread' label was a UI
+    // string masquerading as a dict key — fixing here so the legend
+    // bucketing actually runs instead of falling through to "No data".
+    'Actual hours vs spread': [
+        { gte:  4,    lt:  999999, color: 'rgba(255 , 0 , 0)',     label: '≥ +4 hrs' },
+        { gte:  2,    lt:  4,      color: 'rgba(251 , 155 , 210)', label: '+2 to +4 hrs' },
+        { gte:  0.5,  lt:  2,      color: 'rgba(242 , 141 , 30)',  label: '+0.5 to +2 hrs' },
+        { gte: -0.5,  lt:  0.5,    color: 'rgba(6 , 142 , 34)',    label: '±0.5 hrs (on plan)' },
+        { gte: -2,    lt: -0.5,    color: 'rgba(196 , 215 , 155)', label: '−2 to −0.5 hrs' },
+        { gte: -4,    lt: -2,      color: 'rgba(97 , 135 , 255)',  label: '−4 to −2 hrs' },
+        { gte: -999999, lt: -4,    color: 'rgba(0 , 60 , 180)',    label: '≤ −4 hrs' },
+    ],
+
+    // ============================================================
+    // SPREAD KPIs — 24-hr (hourly) view
+    // ============================================================
+
+    // Open Hours (binary) — was Σopenhours > 0 during this (period × hour)?
+    'Open Hours Binary_hourly': [
+        { gte: 1, lt: 2, color: 'rgba(6 , 142 , 34)',  label: 'Open' },
+        { gte: 0, lt: 1, color: 'rgba(174, 174, 174)', label: 'Closed' },
+    ],
+
+    // Spread Hours (binary) — was Σspread > 0 during this (period × hour)?
+    'Spread Hours Binary_hourly': [
+        { gte: 1, lt: 2, color: 'rgba(6 , 142 , 34)',  label: 'Scheduled' },
+        { gte: 0, lt: 1, color: 'rgba(174, 174, 174)', label: 'Not Scheduled' },
+    ],
+
+    // Actual vs Spread — three-state comparison (Σ over the selected
+    // date range) used when MORE THAN ONE date is in scope. Compares
+    // total actual open hours against total scheduled hours per
+    // (table, hour) bucket and buckets into three coarse bands.
+    'Actual vs Spread_hourly': [
+        { gte:  1,   lt:  2,    color: 'rgba(6 , 142 , 34)',    label: 'Over Spread' },
+        { gte:  0,   lt:  1,    color: 'rgba(174, 174, 174)',   label: 'On Plan' },
+        { gte: -2,   lt:  0,    color: 'rgba(255 , 0 , 0)',     label: 'Under Spread' },
+    ],
+
+    // Actual vs Spread — single-day mode. Each (table, hour) is the
+    // binary cross-product of (actual ∈ {0,1}) × (spread ∈ {0,1}),
+    // encoded:
+    //     3 = Open as Spread    (actual=1, spread=1)
+    //     2 = Over Spread        (actual=1, spread=0)
+    //     1 = Under Spread       (actual=0, spread=1)
+    //     0 = Close as Spread    (actual=0, spread=0)
+    // Color story per the user's spec — dark blue match, green
+    // over-run, red under-run, dark grey planned-close.
+    'Actual vs Spread (Single Day)_hourly': [
+        { gte:  3,   lt:  4,    color: 'rgba(0 , 60 , 180)',    label: 'Open as Spread' },
+        { gte:  2,   lt:  3,    color: 'rgba(6 , 142 , 34)',    label: 'Over Spread' },
+        { gte:  1,   lt:  2,    color: 'rgba(255 , 0 , 0)',     label: 'Under Spread' },
+        { gte:  0,   lt:  1,    color: 'rgba(0, 0, 0)',         label: 'Close as Spread' },
+    ],
+
+    // Spread Variance % — signed percentage delta vs the plan.
+    // Bucket boundaries align with the example in the user spec:
+    // "+10% to +20% represents actual open more than spread".
+    'Spread Variance %_hourly': [
+        { gte:  20,    lt: 999999, color: 'rgba(255 , 0 , 0)',     label: '≥ +20%' },
+        { gte:  10,    lt: 20,     color: 'rgba(251 , 155 , 210)', label: '+10 to +20%' },
+        { gte:   5,    lt: 10,     color: 'rgba(242 , 141 , 30)',  label: '+5 to +10%' },
+        { gte:  -5,    lt:  5,     color: 'rgba(6 , 142 , 34)',    label: '±5% (on plan)' },
+        { gte: -10,    lt: -5,     color: 'rgba(196 , 215 , 155)', label: '−5 to −10%' },
+        { gte: -20,    lt: -10,    color: 'rgba(97 , 135 , 255)',  label: '−10 to −20%' },
+        { gte: -999999, lt: -20,   color: 'rgba(0 , 60 , 180)',    label: '≤ −20%' },
+    ],
+
 }
 
-export const available_KPI_Map = ['Gametype', 'Drop per floor day', 'Win per floor day', 'Patron hours per floor day', 'Drop per open day', 'Win per open day', 'Patron hours per open day', 'Drop per open hour', 'Win per open hour', 'Patron hours per open hour', 'Daily open hours', 'Table minimum', 'Avgbet', 'Theo per floor day', 'Theo per open day', 'Theo per open hour', 'Hands per hour', 'Wagered hands per hour', 'Free hands per hour', 'Unused Tables', 'Open Percentage', 'Active % (Min by Min)'];
+// Normalize a threshold color string (some are written as "rgba(0 , 60 , 180)"
+// — 3 values, irregular spacing) into a clean rgb()/rgba() so every consumer
+// (ECharts, MUI, antd ColorPicker) parses it reliably.
+function normalizeColor(c) {
+    const nums = String(c).match(/[\d.]+/g);
+    if (!nums || nums.length < 3) return c;
+    const [r, g, b, a] = nums;
+    return a != null ? `rgba(${r}, ${g}, ${b}, ${a})` : `rgb(${r}, ${g}, ${b})`;
+}
+
+// Resolve a $ table-minimum to the SAME color the Performance Heatmap's
+// "Table minimum" KPI paints it (threshold_dict['Table minimum']). Lets the
+// pricing dashboard share one color language with performance.
+export function tableMinimumColor(min) {
+    const bands = threshold_dict['Table minimum'] || [];
+    const v = Number(min) || 0;
+    for (const b of bands) {
+        if (v >= b.gte && v < b.lt) return normalizeColor(b.color);
+    }
+    // Below the lowest band → use the lowest band's color.
+    return bands.length ? normalizeColor(bands[bands.length - 1].color) : '#7aa2f7';
+}
+
+// The full table-minimum LADDER from the Performance "Table minimum" KPI —
+// one rung per band, using the band's LABEL as the minimum value and its
+// (normalized) color. Ascending by value. This is the canonical "available
+// minimum" list the pricing dashboard seeds from, so the two dashboards
+// stay perfectly in sync (50/100/200/300/500/800/1k/1.5k/2k/3k/5k/10k).
+export function tableMinimumLadder() {
+    const bands = threshold_dict['Table minimum'] || [];
+    return bands
+        .map((b) => {
+            const min = parseInt(String(b.label).replace(/[^0-9]/g, ''), 10) || b.gte;
+            return { min, label: b.label, color: normalizeColor(b.color) };
+        })
+        .sort((a, b) => a.min - b.min);
+}
+
+export const available_KPI_Map = ['Gametype', 'Drop per floor day', 'Win per floor day', 'Patron hours per floor day', 'Drop per open day', 'Win per open day', 'Patron hours per open day', 'Drop per open hour', 'Win per open hour', 'Patron hours per open hour', 'Daily open hours', 'Table minimum', 'Avgbet', 'Theo per floor day', 'Theo / Win per floor day', 'Theo per open day', 'Theo per open hour', 'Hands per hour', 'Wagered hands per hour', 'Free hands per hour', 'Unused Tables', 'Open Percentage', 'Active % (Min by Min)', 'Spread hours per floor day', 'Spread hours per open day', 'Actual hours vs spread'];
 
 // ---------------------------------------------------------------------
 // Shared scatter geometry — same xAxis / yAxis bounds and symbol size
@@ -540,6 +779,7 @@ export const NUMERIC_KPIS_AVG = [
   { key: 'Table minimum',              idx: 14, label: 'Table Minimum',              isPercent: false },
   { key: 'Avgbet',                     idx: 15, label: 'Average Bet',                isPercent: false },
   { key: 'Theo per floor day',         idx: 22, label: 'Theo per Floorday',          isPercent: false },
+  { key: 'Theo / Win per floor day',   idx: 39, label: 'Theo / Win per Floorday',    isPercent: false },
   { key: 'Theo per open day',          idx: 23, label: 'Theo per Openday',           isPercent: false },
   { key: 'Theo per open hour',         idx: 24, label: 'Theo per Open Hour',         isPercent: false },
   { key: 'Hands per hour',             idx: 26, label: 'Hands per Hour',             isPercent: false },
@@ -548,16 +788,44 @@ export const NUMERIC_KPIS_AVG = [
   { key: 'Unused Tables',              idx: 29, label: 'Unused Tables',              isPercent: false },
   { key: 'Open Percentage',            idx: 30, label: 'Open Percentage',            isPercent: true  },
   { key: 'Active % (Min by Min)',      idx: 20, label: 'Active % (Min by Min)',      isPercent: false },
+  // Spread KPIs — see dataProcessing.js / dataSource.js for the
+  // underlying `spread` field semantics.
+  { key: 'Spread hours per floor day', idx: 36, label: 'Scheduled Hours per Floorday', isPercent: false },
+  { key: 'Spread hours per open day',  idx: 37, label: 'Scheduled Hours per Openday',  isPercent: false },
+  { key: 'Actual hours vs spread',     idx: 38, label: 'Actual Hours vs Scheduled',    isPercent: false },
 ];
 // 24-hr KPI dropdown. Order = display order. Each label must exist in
 // HOURLY_KPI_REGISTRY (dataProcessingHourly.js) with a matching
 // threshold_dict ramp keyed `<thresholdKey>`.
 export const available_KPI_Map_Hour = [
-  'Open Hours', 'Patron Hours per table', 'Table Minimum', 'Unused Tables',
+  // 'Open Hours' (the old 0/1/2 KPI) was renamed to 'Open Status' — the
+  // value semantic stayed the same, only the label changed. The NEW
+  // 'Open Hours' is binary (1 = was-open / 0 = was-closed). The four
+  // *Spread* KPIs are new: open binary, schedule binary, comparison,
+  // and signed % variance.
+  'Open Status', 'Patron Hours per table', 'Table Minimum', 'Unused Tables',
   'Theo per table per hour',
   'Turnover per table per hour', 'Win per table per hour', 'Hands per table per hour',
   'Occupancy %', 'Active % (Min by Min)', 'Avg bet',
+  'Open Hours', 'Spread Hours', 'Actual vs Spread', 'Actual vs Spread (Detail)',
 ];
+
+// UI rebrand: the floor's "spread" hours ARE the scheduled open hours, so
+// the operator-facing KPI names read "Scheduled" instead of "Spread". This
+// is DISPLAY ONLY — every internal KPI key, threshold-dict key, scatter
+// dim and branch condition keeps the original 'Spread' id, so no lookup or
+// logic changes. Apply kpiDisplayLabel() wherever a KPI name is shown
+// (dropdowns, panel title, scatter title).
+export const KPI_LABEL_OVERRIDES = {
+    'Spread hours per floor day': 'Scheduled hours per floor day',
+    'Spread hours per open day':  'Scheduled hours per open day',
+    'Actual hours vs spread':     'Actual hours vs scheduled',
+    'Spread Hours':               'Scheduled Hours',
+    'Actual vs Spread':           'Actual vs Scheduled',
+    'Actual vs Spread (Detail)':  'Actual vs Scheduled (Detail)',
+};
+export const kpiDisplayLabel = (key) => KPI_LABEL_OVERRIDES[key] || key;
+
 export const GAMETYPE_COLORS = {
     BA: 'rgba(255, 99, 132, 1)',
     NC: 'rgba(54, 162, 235, 1)',
@@ -579,47 +847,77 @@ export const GAMETYPE_COLORS = {
 // segment classification.
 export const AREAS = ['MS', 'PM'];
 
-// Legend grouping for the Performance Heatmap. Most cells belong to "MS"
-// (everything in the MS segment), but certain pits are broken out as their
-// own columns. Any pit listed in PIT_LEGEND_GROUP_MAP takes precedence
-// over the area; MS pits not in the map fall through to "MS"; PM pits not
-// in the map are unassigned (and therefore not counted in any column).
+// Legend grouping for the Performance Heatmap.
 //
-// Edit this map to add/remove special-cased pits — column order in the
-// rendered legend follows LEGEND_GROUPS below.
-export const LEGEND_GROUPS = ['MS', '871', '805', '888', '889', '883', '885'];
+// Each data row now carries a `sub_segment` field (provided upstream by
+// the API) that names the legend column directly — replacing the old
+// hardcoded PIT_LEGEND_GROUP_MAP that mapped specific pits to bucket
+// labels. Rationale: column membership changes with floor reorganisation
+// and the dashboard shouldn't need a code edit every time pit 882
+// migrates from the 888 group to the 889 group. The backend is now the
+// single source of truth for membership.
+//
+// Behaviour:
+//   • sub_segment present (non-empty string) → that string IS the column
+//   • sub_segment null / empty               → row is EXCLUDED from the
+//                                              legend (no fallback)
+export function legendGroupForSubSegment(subSegment) {
+  if (subSegment == null) return null;
+  const s = String(subSegment).trim();
+  return s.length > 0 ? s : null;
+}
 
-const PIT_LEGEND_GROUP_MAP = {
-  // 871 group: pits 871, 872
-  '871': '871',
-  '872': '871',
-  // 805 group: pit 805
-  '805': '805',
-  // 888 group: pits 888, 882
-  '888': '888',
-  '882': '888',
-  // 889 group: pits 889, 881
-  '889': '889',
-  '881': '889',
-  // 883 group: pit 883
-  '883': '883',
-  // 885 group: pit 885
-  '885': '885',
-};
+// Preferred column ORDER for the legend table.
+//
+// Membership is data-driven (whatever sub_segments the API emits), but
+// the LEFT-TO-RIGHT ORDER of those columns is curated here so the most
+// frequently-scanned segments live on the left edge where the eye
+// lands first. Edit this list to re-order columns without touching
+// component code.
+//
+// Resolution rule (implemented by sortSubSegmentsByPreference below):
+//   1. Sub_segments listed here appear first, in this exact order.
+//   2. Any sub_segments present in the data but NOT in this list fall
+//      to the right end, sorted alphanumerically (numeric codes by
+//      integer value, everything else by locale string).
+//
+// Effect: adding a new sub_segment in production shows up automatically
+// on the right; promoting it to the curated section is a one-line edit
+// here, no rebuild of any component required.
+export const SUB_SEGMENT_ORDER = [
+    'MS',
+    '871',
+    '805',
+    '888',
+    '889',
+    '883',
+    '885',
+    'PM',
+];
 
-/**
- * Resolve the legend column for a (pit, area) pair.
- *
- * @param {string|number} pit
- * @param {string}        area  — usually "MS" or "PM"
- * @returns {string|null}  one of LEGEND_GROUPS, or null if the row should
- *                         not appear in any legend column.
- */
-export function legendGroupForPit(pit, area) {
-  const p = String(pit);
-  if (PIT_LEGEND_GROUP_MAP[p]) return PIT_LEGEND_GROUP_MAP[p];
-  if (String(area) === 'MS') return 'MS';
-  return null;
+// Sort `subSegments` (array of strings) according to SUB_SEGMENT_ORDER:
+// curated entries first in declared order, then the rest by numeric
+// value when they parse as integers, otherwise locale-alphabetical.
+// Centralised so legend + percentile + any future consumer agree.
+export function sortSubSegmentsByPreference(subSegments) {
+    const order = new Map(SUB_SEGMENT_ORDER.map((s, i) => [s, i]));
+    const present = [...subSegments];
+    const curated = present
+        .filter((s) => order.has(s))
+        .sort((a, b) => order.get(a) - order.get(b));
+    const rest = present
+        .filter((s) => !order.has(s))
+        .sort((a, b) => {
+            const ai = parseInt(a, 10);
+            const bi = parseInt(b, 10);
+            const aN = Number.isFinite(ai);
+            const bN = Number.isFinite(bi);
+            if (aN && bN) return ai - bi;
+            if (aN) return -1;
+            if (bN) return 1;
+            return a.localeCompare(b);
+        });
+    return [...curated, ...rest];
 }
 
 export const MANUFACTURER_COLORS = {};

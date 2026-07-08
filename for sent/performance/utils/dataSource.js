@@ -70,7 +70,11 @@ const DEFAULT_TZ_SHIFT_HOURS = Number(process.env.REACT_APP_TZ_SHIFT_HOURS) || 0
 // ---------------------------------------------------------------------
 
 const DAILY_NUMERIC_FIELDS = [
-  'patronhrs', 'openhours', 'openday', 'floorday',
+  // `spread` = SCHEDULED open hours (the planned schedule). Distinct from
+  // `openhours` which is ACTUAL open hours (what really happened). New
+  // KPIs read from both: "spread hours per floorday", "spread hours per
+  // openday", "actual hours vs spread" (= openhours/floorday − spread/floorday).
+  'patronhrs', 'openhours', 'openday', 'floorday', 'spread',
   // `turnover` (was `wager`) — the sum of all bet amounts. Renamed for
   // alignment with business terminology; avgbet = turnover / patron_hands.
   'drop', 'turnover', 'win', 'theo', 'watm_total',
@@ -276,6 +280,13 @@ function normalizeRows(rows, numericFields, opts = {}) {
     // stable across data sources that vary between int and string).
     if (out.table !== undefined) out.table = String(out.table);
     if (out.pit   !== undefined) out.pit   = String(out.pit);
+    // sub_segment names the legend column for this row (see
+    // legendGroupForSubSegment in heatmapConstants.js). Always a string
+    // when present; left undefined when the API omits it so the legend
+    // resolver can correctly exclude unclassified rows.
+    if (out.sub_segment !== undefined && out.sub_segment !== null) {
+      out.sub_segment = String(out.sub_segment);
+    }
 
     // Re-derive dow from the (possibly tz-shifted) date so every row is
     // in the unified {WD, Fri, Sat, Sun} bucketing — see DOW_BUCKETS /

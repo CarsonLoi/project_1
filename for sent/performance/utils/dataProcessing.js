@@ -35,7 +35,9 @@ const _now = (typeof performance !== 'undefined' && performance.now)
 function emptyBucket(extra) {
   return {
     drop: 0, win: 0, theo: 0, turnover: 0,
-    patronhrs: 0, openhours: 0, openday: 0, floorday: 0,
+    // `spread` = SCHEDULED open hours; `openhours` = ACTUAL open hours.
+    // Both summed independently so the new spread KPIs can compare.
+    patronhrs: 0, openhours: 0, spread: 0, openday: 0, floorday: 0,
     watm_total: 0,
     patron_hands: 0,
     // Hand-count trio (aligned with hourly + wd):
@@ -43,6 +45,10 @@ function emptyBucket(extra) {
     //   active_game_count = wagered hands
     //   free_game_count   = free / promo hands
     game_count: 0, active_game_count: 0, free_game_count: 0,
+    // Blended numerator for "Theo / Win per floorday": per row we add
+    // THEO for BA/NC gametypes, WIN otherwise (see accumulate()). Summed
+    // here so Pit/Zone buckets blend correctly across mixed gametypes.
+    theo_or_win: 0,
     // Min-by-min granularity for "Active % (Min by Min)" KPI.
     open_minutes: 0, active_minutes: 0,
     tablemin: {}, // parsed-and-summed histogram, see dataSource.parseTablemin
@@ -63,6 +69,8 @@ function accumulate(bucket, row) {
   bucket.turnover          += row.turnover          || 0;
   bucket.patronhrs         += row.patronhrs         || 0;
   bucket.openhours         += row.openhours         || 0;
+  // Scheduled open hours — new field in the daily source.
+  bucket.spread            += row.spread            || 0;
   bucket.openday           += row.openday           || 0;
   bucket.floorday          += row.floorday          || 0;
   bucket.watm_total        += row.watm_total        || 0;
@@ -72,6 +80,13 @@ function accumulate(bucket, row) {
   bucket.free_game_count   += row.free_game_count   || 0;
   bucket.open_minutes      += row.open_minutes      || 0;
   bucket.active_minutes    += row.active_minutes    || 0;
+  // Theo for BA/NC tables, Win for everything else — blended per row so
+  // a Pit/Zone bucket spanning both kinds sums each table's correct
+  // numerator. (In Table mode all rows share one gametype, so this is
+  // simply Σtheo or Σwin for that table.)
+  bucket.theo_or_win       += (row.gametype === 'BA' || row.gametype === 'NC')
+                                ? (row.theo || 0)
+                                : (row.win  || 0);
   addTablemin(bucket.tablemin, parseTablemin(row.tablemin));
 }
 
@@ -111,6 +126,10 @@ function computeKpis(d, label, selectedPricingOptions) {
     theo_per_openday:       d.openday   > 0                       ? parseInt(d.theo / d.openday)         : -999999,
     theo_per_openhour:      d.openhours > 0                       ? parseInt(d.theo / d.openhours)       : -999999,
     theo_per_floorday:      (d.floorday > 0 && d.openhours > 0) ? parseInt(d.theo / d.floorday)        : -999999,
+    // Theo / Win per floorday — uses Σtheo for BA/NC tables and Σwin
+    // otherwise (the blend is pre-summed in d.theo_or_win), divided by
+    // the floorday capacity. Gated like the other per-floorday KPIs.
+    theo_win_per_floorday:  (d.floorday > 0 && d.openhours > 0) ? parseInt(d.theo_or_win / d.floorday) : -999999,
     hands_per_hour:         d.openhours > 0 ? parseInt(d.game_count / d.openhours)        : -999999,
     wagered_hands_per_hour: d.openhours > 0 ? parseInt(d.active_game_count / d.openhours) : -999999,
     free_hands_per_hour:    d.openhours > 0 ? parseInt(d.free_game_count / d.openhours)   : -999999,
@@ -119,7 +138,29 @@ function computeKpis(d, label, selectedPricingOptions) {
     // capture sub-hour idle gaps the activehours flag may flatten.
     active_pct_min:         d.open_minutes > 0 ? (d.active_minutes / d.open_minutes) * 100 : -999999,
     open_status:            d.floorday  > 0 ? (d.openday > 0 ? ((d.win > 0 || d.patronhrs > 0) ? 2 : 1) : 0) : -999999,
-    open_percentage:        d.floorday  > 0 ? (d.openday > 0 ? d.openday / d.floorday : 0)               : -999999,
+    // Open Percentage emitted on the unified percentage scale
+    // (0..100), matching Active % (Min by Min) at slot 20 and
+    // Occupancy % at hourly slot 7. Threshold ramps in
+    // heatmapConstants.js were updated to match. See the comment
+    // block above PERCENT_KPIS in PerformanceDashboard.js for the
+    // full alignment story.
+    open_percentage:        d.floorday  > 0 ? (d.openday > 0 ? (d.openday / d.floorday) * 100 : 0)         : -999999,
+    // --- Spread KPIs (scheduled vs actual) -------------------------
+    // `spread` is the scheduled open hours (planned schedule);
+    // `openhours` is what actually happened. The three KPIs below
+    // turn that pair into actionable metrics:
+    //
+    //   • spread_per_floorday  — capacity utilisation of the plan
+    //   • spread_per_openday   — avg planned hours per open day
+    //   • actual_vs_spread     — (actual − plan), positive means
+    //                            we ran longer than scheduled,
+    //                            negative means we under-ran.
+    //                            Expressed per floorday so the metric
+    //                            is comparable across tables with
+    //                            different floor capacity.
+    spread_per_floorday:    (d.floorday > 0)                       ? parseInt(d.spread / d.floorday)                        : -999999,
+    spread_per_openday:     (d.openday  > 0)                       ? parseInt(d.spread / d.openday)                         : -999999,
+    actual_vs_spread:       (d.floorday > 0)                       ? parseInt((d.openhours - d.spread) / d.floorday)        : -999999,
   };
 }
 
@@ -145,12 +186,16 @@ const EMPTY_KPIS = {
   theo_per_openday:       -1000000,
   theo_per_openhour:      -1000000,
   theo_per_floorday:      -1000000,
+  theo_win_per_floorday:  -1000000,
   active_pct_min:         -1000000,
   hands_per_hour:         -1000000,
   wagered_hands_per_hour: -1000000,
   free_hands_per_hour:    -1000000,
   open_status:            -1000000,
   open_percentage:        -1000000,
+  spread_per_floorday:    -1000000,
+  spread_per_openday:     -1000000,
+  actual_vs_spread:       -1000000,
 };
 
 // ---------------------------------------------------------------------
@@ -193,6 +238,12 @@ export function buildAvgScatterData(
       byTable[tableKey] = emptyBucket({
         table: String(row.table), gametype: row.gametype,
         pit: pitKey, zone: zoneKey, area: row.area,
+        // sub_segment is a per-row legend-column label from the API.
+        // Carried on the bucket as metadata only (not aggregated) —
+        // first row wins, which is fine because a table's sub_segment
+        // doesn't change between rows of the same date range. See
+        // legendGroupForSubSegment() in heatmapConstants.
+        sub_segment: row.sub_segment,
       });
     }
     accumulate(byTable[tableKey], row);
@@ -273,7 +324,17 @@ export function buildAvgScatterData(
       kpis.hands_per_hour, kpis.wagered_hands_per_hour, kpis.free_hands_per_hour, // 26..28
       kpis.open_status, kpis.open_percentage,                                  // 29..30
       zone, pit, tableID,                                                      // 31..33
-      (tableBucket && tableBucket.area) || row.Location || '',                 // 34 — metadata only
+      (tableBucket && tableBucket.area) || row.Location || '',                 // 34 — area (metadata)
+      // 35 — sub_segment (metadata). Drives the legend column resolver
+      // (see legendGroupForSubSegment); kept as a plain string so the
+      // dashboard's scatterArea / recordArea helpers can read it
+      // directly without another lookup. '' when the API didn't carry
+      // a sub_segment for this row — handler treats that as "exclude
+      // from legend" per the new semantic.
+      (tableBucket && tableBucket.sub_segment) || '',                          // 35
+      // Spread KPIs (new). See computeKpis above for the formulas.
+      kpis.spread_per_floorday, kpis.spread_per_openday, kpis.actual_vs_spread, // 36..38
+      kpis.theo_win_per_floorday,                                              // 39 — Theo/Win per floorday
     ]);
   }
 

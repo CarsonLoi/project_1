@@ -3,13 +3,23 @@ import * as echarts from 'echarts';
 import * as d3 from 'd3';
 import {
     threshold_dict,
+    thresholdsFor,
     GAMETYPE_COLORS,
     SCATTER_X_MIN, SCATTER_X_MAX, SCATTER_Y_MIN, SCATTER_Y_MAX,
     SCATTER_SYMBOL_SIZE_MULTIPLIER as SZ,
     SCATTER_GRID,
 } from '../../shared/constants/heatmapConstants';
+import { PERF_FONTS } from '../constants/fontSizes';
+const SF = PERF_FONTS.scatter;
 
-const ScatterHeatmapAvg = React.memo(({ data, selectedKPI, selectedContour, title, visualMapSelected, onVisualMapSelect, onBrushSelected, selectedTables = [], kpiConfigMap: kpiConfigMapOverride }) => {
+// Definitive out-of-range fill — sentinel values (-999999, -1000000)
+// that fall below every threshold piece render with this color so
+// "no data" tables read as clearly distinct from the lowest valid
+// bucket (which is often a dark blue and was being confused with
+// "empty"). Centralised so the choice stays consistent across views.
+const OUT_OF_RANGE_FILL = { color: '#3a3a3a', opacity: 0.35 };
+
+const ScatterHeatmapAvg = React.memo(({ data, selectedKPI, selectedContour, title, visualMapSelected, onVisualMapSelect, onBrushSelected, selectedTables = [], selectedArea = [], kpiConfigMap: kpiConfigMapOverride }) => {
     const chartRef = useRef(null);
     const [chartInstance, setChartInstance] = useState(null);
     const internalSelectionRef = useRef([]); // To prevent loops
@@ -33,6 +43,7 @@ const ScatterHeatmapAvg = React.memo(({ data, selectedKPI, selectedContour, titl
         'Win per floor day': { dim: 18, thresholds: threshold_dict['Win per floor day'] },
         'Patron hours per floor day': { dim: 19, thresholds: threshold_dict['Patron hours per floor day'] },
         'Theo per floor day': { dim: 22, thresholds: threshold_dict['Theo per floor day'] },
+        'Theo / Win per floor day': { dim: 39, thresholds: threshold_dict['Theo / Win per floor day'] },
         'Theo per open day': { dim: 23, thresholds: threshold_dict['Theo per open day'] },
         'Theo per open hour': { dim: 24, thresholds: threshold_dict['Theo per open hour'] },
         'Hands per hour': { dim: 26, thresholds: threshold_dict['Hands per hour'] },
@@ -41,6 +52,13 @@ const ScatterHeatmapAvg = React.memo(({ data, selectedKPI, selectedContour, titl
         'Unused Tables': { dim: 29, thresholds: threshold_dict['Unused Tables'] },
         'Open Percentage': { dim: 30, thresholds: threshold_dict['Open Percentage'] },
         'Active % (Min by Min)': { dim: 20, thresholds: threshold_dict['Active % (Min by Min)'] },
+        // Spread KPIs (Avg view) — slots 36..38. Without these, selecting
+        // a spread KPI fell back to the first map entry (Drop, dim 7),
+        // coloring the ~200k drop value against the spread ramp → every
+        // table painted red regardless of being on plan.
+        'Spread hours per floor day': { dim: 36, thresholds: threshold_dict['Spread hours per floor day'] },
+        'Spread hours per open day':  { dim: 37, thresholds: threshold_dict['Spread hours per open day'] },
+        'Actual hours vs spread':     { dim: 38, thresholds: threshold_dict['Actual hours vs spread'] },
         'Gametype': { dim: 3, isCategorical: true }
     }), []);
 
@@ -113,6 +131,14 @@ const ScatterHeatmapAvg = React.memo(({ data, selectedKPI, selectedContour, titl
             ? Object.keys(kpiConfigMapOverride)[0]   // first hourly KPI
             : 'Drop per floor day';
         const kpiSettings = kpiConfigMap[selectedKPI] || kpiConfigMap[fallbackKey];
+        // Per-area threshold override. When the user filters to a single
+        // area (e.g. MS or PM only) and that area has a registered
+        // ramp for this KPI, swap it in here. Falls back to the
+        // KPI's default ramp otherwise (multi-area, no-area, or no
+        // registered override). The thresholdsFor() resolver lives in
+        // heatmapConstants so every consumer reads from one source.
+        const areaScopedThresholds = thresholdsFor(selectedKPI, selectedArea);
+        const effectiveThresholds = areaScopedThresholds || kpiSettings.thresholds;
 
         let visualMap = null;
 
@@ -131,7 +157,7 @@ const ScatterHeatmapAvg = React.memo(({ data, selectedKPI, selectedContour, titl
                 orient: 'vertical',
                 itemHeight: 18,
                 itemGap: 12,
-                textStyle: { color: '#fff', fontSize: 15 },
+                textStyle: { color: '#fff', fontSize: SF.visualMap },
                 selected: visualMapSelected,
                 // Disable highlight-on-hover so hovering a legend piece
                 // doesn't dispatch a tooltip event with a non-data param.
@@ -139,16 +165,13 @@ const ScatterHeatmapAvg = React.memo(({ data, selectedKPI, selectedContour, titl
                 // defaults to 'multiple' for piecewise — kept explicit).
                 hoverLink: false,
                 selectedMode: 'multiple',
-                outOfRange: {
-                    color: '#555',
-                    opacity: 0.4
-                }
+                outOfRange: OUT_OF_RANGE_FILL,
             };
-        } else if (kpiSettings.thresholds) {
+        } else if (effectiveThresholds) {
             visualMap = {
                 type: 'piecewise',
                 dimension: kpiSettings.dim,
-                pieces: kpiSettings.thresholds.map(t => ({
+                pieces: effectiveThresholds.map(t => ({
                     gte: t.gte,
                     lt: t.lt,
                     color: t.color,
@@ -159,7 +182,7 @@ const ScatterHeatmapAvg = React.memo(({ data, selectedKPI, selectedContour, titl
                 orient: 'vertical',
                 itemHeight: 18,
                 itemGap: 12,
-                textStyle: { color: '#fff', fontSize: 15 },
+                textStyle: { color: '#fff', fontSize: SF.visualMap },
                 selected: visualMapSelected,
                 // Disable highlight-on-hover so hovering a legend piece
                 // doesn't dispatch a tooltip event with a non-data param.
@@ -167,10 +190,11 @@ const ScatterHeatmapAvg = React.memo(({ data, selectedKPI, selectedContour, titl
                 // defaults to 'multiple' for piecewise — kept explicit).
                 hoverLink: false,
                 selectedMode: 'multiple',
-                outOfRange: {
-                    color: '#555',
-                    opacity: 0.4
-                }
+                // Sentinel placeholders (-999999 / -1000000) fall below
+                // the lowest piece's `gte: 0` and land here — explicit
+                // dim-grey so "no data" reads as muted rather than as
+                // the lowest valid bucket.
+                outOfRange: OUT_OF_RANGE_FILL,
             };
         }
 
@@ -270,7 +294,7 @@ const ScatterHeatmapAvg = React.memo(({ data, selectedKPI, selectedContour, titl
             animation: false,
             title: {
                 text: title,
-                textStyle: { color: '#ccc', fontSize: 20, fontWeight: 600 },
+                textStyle: { color: '#ccc', fontSize: SF.titleAvg, fontWeight: 600 },
                 left: 20,
                 top: 20
             },
@@ -299,7 +323,7 @@ const ScatterHeatmapAvg = React.memo(({ data, selectedKPI, selectedContour, titl
                 borderColor: 'rgba(122, 162, 247, 0.4)',
                 borderWidth: 1,
                 padding: [10, 15],
-                textStyle: { color: '#fff', fontSize: 16 },
+                textStyle: { color: '#fff', fontSize: SF.tooltip },
                 formatter: function (params) {
                     if (params.seriesType === 'custom') return '';
                     // Guard: visualMap hoverLink can fire the formatter
@@ -313,8 +337,19 @@ const ScatterHeatmapAvg = React.memo(({ data, selectedKPI, selectedContour, titl
                     const pit = d[32] || '-';
                     const zone = d[31] || '-';
 
-                    const formatVal = (val) => (val === -1000000 || val === -999999) ? 'Closed' :
-                        typeof val === 'number' ? val.toLocaleString(undefined, { maximumFractionDigits: 1 }) : val;
+                    // Compact value formatter — K notation at 1k+ so the
+                    // 12-KPI grid stays readable; 1 decimal between
+                    // 1k–10k, 0 decimal at 10k+, plain integer below 1k.
+                    // Mirrors the legend/percentile formatter so units
+                    // look consistent across the dashboard surfaces.
+                    const formatVal = (val) => {
+                        if (val === -1000000 || val === -999999) return 'Closed';
+                        if (typeof val !== 'number' || !Number.isFinite(val)) return val ?? '–';
+                        const abs = Math.abs(val);
+                        if (abs >= 10000) return `${(val / 1000).toFixed(0)}k`;
+                        if (abs >=  1000) return `${(val / 1000).toFixed(1)}k`;
+                        return val.toLocaleString(undefined, { maximumFractionDigits: 1 });
+                    };
                     const formatPct = (val) => (val === -1000000 || val === -999999) ? 'Closed' :
                         typeof val === 'number' ? val.toFixed(1) + '%' : val;
 
@@ -361,43 +396,80 @@ const ScatterHeatmapAvg = React.memo(({ data, selectedKPI, selectedContour, titl
                             </div>
                         `
                         : `
-                            <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
-                                <span>Drop per Floorday:</span>
-                                <span style="color: #bb9af7; font-weight: bold;">${formatVal(d[17])}</span>
-                            </div>
-                            <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
-                                <span>Win per Floorday:</span>
-                                <span style="color: #9ece6a; font-weight: bold;">${formatVal(d[18])}</span>
-                            </div>
-                            <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
-                                <span>Patron Hours per Open Hour:</span>
-                                <span style="color: #f7768e; font-weight: bold;">${formatVal(d[13])}</span>
-                            </div>
-                            <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
-                                <span>Theo per Floorday:</span>
-                                <span style="color: #7dcfff; font-weight: bold;">${formatVal(d[22])}</span>
-                            </div>
-                            <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
-                                <span>Theo per Open Hour:</span>
-                                <span style="color: #7dcfff; font-weight: bold;">${formatVal(d[24])}</span>
-                            </div>
-                            <div style="display: flex; justify-content: space-between;">
-                                <span>Table Minimum:</span>
-                                <span style="color: #e0af68; font-weight: bold;">${formatVal(d[14])}</span>
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 4px 18px;">
+                                <!-- Column 1: revenue KPIs (Drop / Win / Theo at floor + open-hour grain) -->
+                                <div style="display: flex; justify-content: space-between;">
+                                    <span style="color: rgba(255,255,255,0.65)">Drop per Floorday:</span>
+                                    <span style="color: #bb9af7; font-weight: bold;">${formatVal(d[17])}</span>
+                                </div>
+                                <!-- Column 2: activity KPIs (patron hours + hand-rate + bet) -->
+                                <div style="display: flex; justify-content: space-between;">
+                                    <span style="color: rgba(255,255,255,0.65)">Patron Hrs/Floor:</span>
+                                    <span style="color: #f7768e; font-weight: bold;">${formatVal(d[19])}</span>
+                                </div>
+
+                                <div style="display: flex; justify-content: space-between;">
+                                    <span style="color: rgba(255,255,255,0.65)">Drop per Open Hr:</span>
+                                    <span style="color: #bb9af7; font-weight: bold;">${formatVal(d[11])}</span>
+                                </div>
+                                <div style="display: flex; justify-content: space-between;">
+                                    <span style="color: rgba(255,255,255,0.65)">Patron Hrs/Open Hr:</span>
+                                    <span style="color: #f7768e; font-weight: bold;">${formatVal(d[13])}</span>
+                                </div>
+
+                                <div style="display: flex; justify-content: space-between;">
+                                    <span style="color: rgba(255,255,255,0.65)">Win per Floorday:</span>
+                                    <span style="color: #9ece6a; font-weight: bold;">${formatVal(d[18])}</span>
+                                </div>
+                                <div style="display: flex; justify-content: space-between;">
+                                    <span style="color: rgba(255,255,255,0.65)">Hands per Hour:</span>
+                                    <span style="color: #c084fc; font-weight: bold;">${formatVal(d[26])}</span>
+                                </div>
+
+                                <div style="display: flex; justify-content: space-between;">
+                                    <span style="color: rgba(255,255,255,0.65)">Win per Open Hr:</span>
+                                    <span style="color: #9ece6a; font-weight: bold;">${formatVal(d[12])}</span>
+                                </div>
+                                <div style="display: flex; justify-content: space-between;">
+                                    <span style="color: rgba(255,255,255,0.65)">Active % (Min):</span>
+                                    <span style="color: #10b981; font-weight: bold;">${formatPct(d[20])}</span>
+                                </div>
+
+                                <div style="display: flex; justify-content: space-between;">
+                                    <span style="color: rgba(255,255,255,0.65)">Theo per Floorday:</span>
+                                    <span style="color: #7dcfff; font-weight: bold;">${formatVal(d[22])}</span>
+                                </div>
+                                <div style="display: flex; justify-content: space-between;">
+                                    <span style="color: rgba(255,255,255,0.65)">Avg Bet:</span>
+                                    <span style="color: #f59e0b; font-weight: bold;">${formatVal(d[15])}</span>
+                                </div>
+
+                                <div style="display: flex; justify-content: space-between;">
+                                    <span style="color: rgba(255,255,255,0.65)">Theo per Open Hr:</span>
+                                    <span style="color: #7dcfff; font-weight: bold;">${formatVal(d[24])}</span>
+                                </div>
+                                <div style="display: flex; justify-content: space-between;">
+                                    <span style="color: rgba(255,255,255,0.65)">Table Minimum:</span>
+                                    <span style="color: #e0af68; font-weight: bold;">${formatVal(d[14])}</span>
+                                </div>
                             </div>
                         `;
 
+                    // Wider Avg tooltip to accommodate the 2-column KPI
+                    // grid; hourly aggregate keeps its single-column
+                    // layout at the original width.
+                    const minWidth = isHourlyAggregate ? 360 : 460;
                     return `
-                        <div style="min-width: 360px;">
+                        <div style="min-width: ${minWidth}px;">
                             <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 5px; margin-bottom: 8px;">
                                 <span style="font-weight: bold; font-size: 18px; color: #7aa2f7;">${label}</span>
                                 <span style="font-size: 13px; background: rgba(255,255,255,0.1); padding: 2px 6px; borderRadius: 4px;">${game}</span>
                             </div>
-                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 14px; color: rgba(255,255,255,0.6);">
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px 14px; font-size: 14px; color: rgba(255,255,255,0.6);">
                                 <div>Area: <span style="color: #fff;">${area}</span></div>
                                 <div>Pit: <span style="color: #fff;">${pit}</span></div>
                                 <div>Zone: <span style="color: #fff;">${zone}</span></div>
-                                <div>Open: <span style="color: #fff;">${(d[30] * 100).toFixed(0)}%</span></div>
+                                <div>Open: <span style="color: #fff;">${(d[30] || 0).toFixed(0)}%</span></div>
                             </div>
                             <div style="margin-top: 10px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.1);">
                                 ${metricRows}

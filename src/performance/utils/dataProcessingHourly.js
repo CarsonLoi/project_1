@@ -34,7 +34,11 @@ const _now = (typeof performance !== 'undefined' && performance.now)
 
 function emptyBucket(extra) {
   return {
-    patronhrs: 0, openhours: 0, activehours: 0,
+    // `spread` = SCHEDULED open hours (planned); `openhours` = ACTUAL
+    // open hours. Both summed so the new spread KPIs (open hours
+    // binary, spread hours binary, actual vs spread, spread variance %)
+    // can compare.
+    patronhrs: 0, openhours: 0, spread: 0, activehours: 0,
     // `turnover` (was `wager`) = sum of all bet amounts across hands.
     drop: 0, turnover: 0, win: 0, theo: 0, watm_total: 0,
     patron_hands: 0,
@@ -52,6 +56,8 @@ function emptyBucket(extra) {
 function accumulate(bucket, row) {
   bucket.patronhrs         += row.patronhrs         || 0;
   bucket.openhours         += row.openhours         || 0;
+  // Scheduled open hours — distinct from actual openhours above.
+  bucket.spread            += row.spread            || 0;
   bucket.activehours       += row.activehours       || 0;
   bucket.drop              += row.drop              || 0;
   bucket.turnover          += row.turnover          || 0;
@@ -97,8 +103,12 @@ const HOURLY_SENTINEL = -1000000;
 
 export const HOURLY_KPI_REGISTRY = {
   // --- existing 5 KPIs (dims unchanged so tooltip + legacy stay valid) ---
-  open_hours: {
-    label: 'Open Hours', dim: 10, thresholdKey: 'Open Hours_hourly',
+  open_status: {
+    // Renamed from 'Open Hours' → 'Open Status' to reflect what the
+    // value actually carries (categorical 0/1/2: closed / open-idle /
+    // open-with-patron). The new binary 'Open Hours' below answers
+    // the simpler "was this hour open at all?" question instead.
+    label: 'Open Status', dim: 10, thresholdKey: 'Open Hours_hourly',
     status: true, // 0/1/2 — set from open/patron state, no compute()
   },
   patron_hours: {
@@ -148,6 +158,80 @@ export const HOURLY_KPI_REGISTRY = {
     // idle gaps that the activehours bit may otherwise flatten.
     compute: (b) => (b.open_minutes > 0 ? (b.active_minutes / b.open_minutes) * 100 : HOURLY_SENTINEL),
   },
+
+  // --- Spread KPIs (new) ---------------------------------------------
+  // The four below all read `bucket.openhours` (actual) and/or
+  // `bucket.spread` (scheduled). They use FRESH dim slots (36–39) at
+  // the tail of the tuple so existing tooltips, brush handlers, and
+  // legacy consumers reading slots 0–35 are not perturbed.
+  //
+  // status: true means "no compute(), value comes from openStatus" —
+  // but these KPIs DO compute; we just bypass the closed-hour
+  // sentinel via `noClosedSentinel: true` so binary/categorical
+  // values like 0/-1 aren't mis-rendered as "no data".
+  open_hours_binary: {
+    // Was this hour open at all? 1 if Σopenhours > 0 (within the
+    // selected period × hour), else 0. The "yes / no" companion to
+    // the 0/1/2 Open Status above.
+    label: 'Open Hours', dim: 36, thresholdKey: 'Open Hours Binary_hourly',
+    noClosedSentinel: true,
+    compute: (b) => (b.openhours > 0 ? 1 : 0),
+  },
+  spread_hours_binary: {
+    // Was this hour SCHEDULED to be open? 1 if Σspread > 0, else 0.
+    // Drives the operational view of "what did the schedule say?",
+    // independent of what actually happened.
+    label: 'Spread Hours', dim: 37, thresholdKey: 'Spread Hours Binary_hourly',
+    noClosedSentinel: true,
+    compute: (b) => (b.spread > 0 ? 1 : 0),
+  },
+  actual_vs_spread: {
+    // Comparison of actual vs scheduled hours. Two modes:
+    //
+    //   MULTI-DAY (ctx.isSingleDay === false): three-state delta of
+    //   the SUMS across the selected dates:
+    //     −1 = Σactual < Σspread     (under-ran the plan)
+    //      0 = Σactual = Σspread     (delivered as planned)
+    //     +1 = Σactual > Σspread     (over-ran the plan)
+    //
+    //   SINGLE-DAY (ctx.isSingleDay === true): each input is binary
+    //   {0,1} so the (actual, spread) pair lives in a 2×2 truth
+    //   table. Encoded so each cell maps to its own threshold bucket:
+    //      3 = (1,1) Open as Spread
+    //      2 = (1,0) Over Spread       (open with no plan)
+    //      1 = (0,1) Under Spread      (planned but closed)
+    //      0 = (0,0) Close as Spread
+    //
+    // The threshold ramp is swapped at the consumer (see PerformanceDashboard
+    // + ScatterHeatmapPlay) so the same dim slot carries either family
+    // of values without ever colliding.
+    label: 'Actual vs Spread', dim: 38, thresholdKey: 'Actual vs Spread_hourly',
+    noClosedSentinel: true,
+    compute: (b, ctx) => {
+      if (ctx && ctx.isSingleDay) {
+        const a = b.openhours > 0 ? 1 : 0;
+        const s = b.spread    > 0 ? 1 : 0;
+        if (a === 1 && s === 1) return 3;
+        if (a === 1 && s === 0) return 2;
+        if (a === 0 && s === 1) return 1;
+        return 0;
+      }
+      if (b.openhours < b.spread) return -1;
+      if (b.openhours > b.spread) return  1;
+      return 0;
+    },
+  },
+  spread_variance_pct: {
+    // (actual − spread) / spread × 100 — signed percentage delta.
+    // Positive = over-ran, negative = under-ran. Sentinel when
+    // spread is 0 (no plan to compare against), so the bucket shows
+    // as grey instead of misleading ±∞.
+    label: 'Actual vs Spread (Detail)', dim: 39, thresholdKey: 'Spread Variance %_hourly',
+    noClosedSentinel: true,
+    compute: (b) => (b.spread > 0
+      ? ((b.openhours - b.spread) / b.spread) * 100
+      : HOURLY_SENTINEL),
+  },
 };
 
 export function buildHourlyScatterData(
@@ -158,13 +242,23 @@ export function buildHourlyScatterData(
   hourList,
   /* minDate */ _minDate,
   /* maxDate */ _maxDate,
+  // Trailing flag — when true, the "Actual vs Spread" KPI switches
+  // from the 3-state Σ delta to the 4-state binary truth-table.
+  // Defaults to false so existing call sites are unaffected.
+  isSingleDay = false,
 ) {
   const _t0 = _now();
   // Group raw rows by (gametype+table, hour). gametype+table because a
   // bare table number is reused across gametypes.
   const byTableHour = Object.create(null);
+  // Per-table sub_segment lookup — captured from the first row seen
+  // for each (gametype, table) and emitted into the scatter tuple
+  // below. A table's sub_segment is stable across hours of the same
+  // date range, so first-row-wins is safe.
+  const subSegmentByTable = Object.create(null);
   for (const value of hourlyData) {
-    const key = gametypeTableKey(value.gametype, value.table) + '|' + value.hour;
+    const tableKey = gametypeTableKey(value.gametype, value.table);
+    const key = tableKey + '|' + value.hour;
     if (!byTableHour[key]) {
       byTableHour[key] = emptyBucket({
         table: String(value.table),
@@ -172,6 +266,9 @@ export function buildHourlyScatterData(
         gametype: value.gametype,
         pit: String(value.pit),
       });
+    }
+    if (value.sub_segment && !subSegmentByTable[tableKey]) {
+      subSegmentByTable[tableKey] = String(value.sub_segment);
     }
     accumulate(byTableHour[key], value);
   }
@@ -203,7 +300,11 @@ export function buildHourlyScatterData(
       // 1 open+idle, 0 closed.
       const openStatus = open ? (hData.patronhrs > 0 ? 2 : 1) : 0;
       // Hour fraction the table was open (capped at 1) — tooltip "Open:".
-      const openPct = open ? Math.min(1, hData.openhours) : 0;
+      // Emitted on the 0..100 percentage scale to match the rest of the
+      // percent KPIs (Active %, Occupancy %, Open Percentage); the
+      // tooltip consumer in ScatterHeatmapPlay reads d[30] directly
+      // without re-multiplying.
+      const openPct = open ? Math.min(1, hData.openhours) * 100 : 0;
 
       dim_table_label.push(table_label);
       dim_open_pct.push(openPct);
@@ -212,21 +313,26 @@ export function buildHourlyScatterData(
         let v;
         if (k.status) {
           v = openStatus;
-        } else if (!open) {
+        } else if (!open && !k.noClosedSentinel) {
           v = k.emptyVal !== undefined ? k.emptyVal : HOURLY_SENTINEL;
         } else {
-          v = k.compute(hData);
+          // Spread KPIs (noClosedSentinel: true) need to run their
+          // compute() even when openhours = 0 — that's a meaningful
+          // input (the "Open Hours Binary" KPI emits 0 there). The
+          // second arg is read by `actual_vs_spread` to pick its
+          // single-day vs multi-day encoding.
+          v = k.compute(hData || { openhours: 0, spread: 0 }, { isSingleDay });
         }
         dimArrays[k.dim].push(v);
       }
     }
 
-    // Assemble the 35-slot tuple. Geometry + meta are scalars; every
-    // value slot (7..30) is a per-hour array. Slots not claimed by a
-    // KPI, the label, or the open-fraction become sentinel arrays so
-    // the tuple shape stays uniform for downstream consumers.
+    // Assemble the 40-slot tuple. Geometry + meta are scalars; every
+    // value slot (7..30, 36..39) is a per-hour array. Slots not
+    // claimed by a KPI, the label, or the open-fraction become
+    // sentinel arrays so the tuple shape stays uniform downstream.
     const sentinelArr = hourList.map(() => HOURLY_SENTINEL);
-    const point = new Array(35);
+    const point = new Array(40);
     point[0] = cfg.x;
     point[1] = cfg.y;
     point[2] = cfg.rotation;
@@ -240,8 +346,18 @@ export function buildHourlyScatterData(
     point[32] = String(cfg.pit);
     point[33] = tableID;
     point[34] = cfg.Location || '';
+    // Slot 35 = sub_segment (legend column label). Sourced from the
+    // first hourly row seen for this (gametype, table) — see the
+    // subSegmentByTable lookup above. '' when the API didn't carry
+    // a sub_segment, which the legend resolver treats as "exclude".
+    point[35] = subSegmentByTable[cfgTableKey] || '';
     for (const k of registryEntries) point[k.dim] = dimArrays[k.dim];
     for (let i = 7; i <= 30; i++) {
+      if (point[i] === undefined) point[i] = sentinelArr;
+    }
+    // Sentinel-fill new spread KPI slots if a future registry edit
+    // ever leaves any of 36..39 unclaimed. Cheap, defensive.
+    for (let i = 36; i <= 39; i++) {
       if (point[i] === undefined) point[i] = sentinelArr;
     }
 
@@ -267,6 +383,10 @@ export function buildHourlyScatterData(
 
 export function buildAggregatedHourlyScatterData(
   hourlyData, configData, finalGames, selectedHours,
+  // Trailing flag — see buildHourlyScatterData. Switches the
+  // "Actual vs Spread" encoding between the 3-state Σ delta and
+  // the 4-state binary truth-table for single-day scope.
+  isSingleDay = false,
 ) {
   const _t0 = _now();
   const selectedSet = new Set(selectedHours.map((h) => parseInt(h)));
@@ -281,6 +401,10 @@ export function buildAggregatedHourlyScatterData(
         gametype: value.gametype,
         pit: String(value.pit),
         area: value.area,
+        // Carry sub_segment as bucket metadata — emitted into slot 35
+        // below so the legend column resolver can read it. First-row
+        // wins (a table's sub_segment is stable within a date range).
+        sub_segment: value.sub_segment,
       });
     }
     accumulate(byTable[key], value);
@@ -306,8 +430,30 @@ export function buildAggregatedHourlyScatterData(
     // hours; pick "Table Minimum" → both show table minimum.
     const open = !!(b && b.openhours > 0);
     const openStatus  = open ? (b.patronhrs > 0 ? 2 : 1) : 0;
-    const openPct     = open ? Math.min(1, b.openhours) : 0;
+    // Same 0..100 scale as the Timeline path above — see comment there.
+    const openPct     = open ? Math.min(1, b.openhours) * 100 : 0;
     const SENT        = -1000000;
+    // --- Spread KPIs (Aggregated view) -----------------------------
+    // Computed independently of `open` because the binary KPIs need
+    // to emit 0 (not the sentinel) when the table was closed for the
+    // whole selected window — closed IS a meaningful answer to "was
+    // it open this period?".
+    const bucketHours  = (b && b.openhours) || 0;
+    const bucketSpread = (b && b.spread)    || 0;
+    const openHrsBin   = bucketHours  > 0 ? 1 : 0;
+    const spreadHrsBin = bucketSpread > 0 ? 1 : 0;
+    // Same dual-mode encoding as the timeline path — see
+    // HOURLY_KPI_REGISTRY.actual_vs_spread comment above.
+    const actVsSpread = isSingleDay
+      ? (openHrsBin === 1 && spreadHrsBin === 1 ? 3
+        : openHrsBin === 1 && spreadHrsBin === 0 ? 2
+        : openHrsBin === 0 && spreadHrsBin === 1 ? 1
+        : 0)
+      : (bucketHours < bucketSpread ? -1
+        : bucketHours > bucketSpread ?  1 : 0);
+    const spreadVarPct = bucketSpread > 0
+      ? ((bucketHours - bucketSpread) / bucketSpread) * 100
+      : SENT;
     // Per-hour rates over the aggregated window. n cancels because both
     // numerator and denominator are summed over the same buckets.
     const patronRatio = open ? b.patronhrs   / b.openhours       : SENT;
@@ -320,9 +466,10 @@ export function buildAggregatedHourlyScatterData(
     const avgbet      = (b && b.patron_hands > 0) ? b.turnover / b.patron_hands : SENT;
     const activePctMin = (b && b.open_minutes > 0) ? (b.active_minutes / b.open_minutes) * 100 : SENT;
 
-    // Build a 35-position tuple. Sentinel-fill all KPI value slots
+    // Build a 40-position tuple. Sentinel-fill all KPI value slots
     // first, then drop in the registry-aligned values + meta.
-    const point = new Array(35).fill(SENT);
+    // Slots 36..39 hold the 4 new spread KPIs (see HOURLY_KPI_REGISTRY).
+    const point = new Array(40).fill(SENT);
     point[0]  = cfg.x;
     point[1]  = cfg.y;
     point[2]  = cfg.rotation;
@@ -348,6 +495,15 @@ export function buildAggregatedHourlyScatterData(
     point[32] = String(cfg.pit || '');
     point[33] = tableID;
     point[34] = (b && b.area) || cfg.Location || '';
+    // Slot 35 — sub_segment (legend column label). Sourced from the
+    // bucket's first row; '' when the API didn't carry one (legend
+    // resolver treats empty string as "exclude from legend").
+    point[35] = (b && b.sub_segment) || '';
+    // Slots 36..39 — Spread KPIs. See HOURLY_KPI_REGISTRY.
+    point[36] = openHrsBin;
+    point[37] = spreadHrsBin;
+    point[38] = actVsSpread;
+    point[39] = spreadVarPct;
 
     scatter.push(point);
   }

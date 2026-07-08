@@ -15,6 +15,8 @@ import {
   cardTitleSx,
   cardHeader,
 } from './insightsTheme';
+import { PERF_FONTS } from '../constants/fontSizes';
+const TR = PERF_FONTS.trend;
 
 const CHART_HEIGHT = 480;
 
@@ -51,7 +53,7 @@ function setChartOption(instance, title, data, xKey, yKey, color) {
             borderColor: 'rgba(0, 212, 255, 0.40)',
             borderWidth: 1,
             padding: [10, 14],
-            textStyle: { color: '#fff', fontSize: 18 },
+            textStyle: { color: '#fff', fontSize: TR.tooltip },
             formatter: (params) => {
                 if (!params || !params[0]) return '';
                 const p = params[0];
@@ -75,7 +77,7 @@ function setChartOption(instance, title, data, xKey, yKey, color) {
             data: data.map(d => d[xKey]),
             axisLabel: {
                 color: 'rgba(232, 234, 250, 0.55)',
-                fontSize: 16,
+                fontSize: TR.axisLabel,
                 fontWeight: 500,
                 // Let ECharts thin the labels automatically so a long
                 // date range (or hour list) doesn't overlap/crowd.
@@ -97,7 +99,7 @@ function setChartOption(instance, title, data, xKey, yKey, color) {
             type: 'value',
             axisLabel: {
                 color: 'rgba(232, 234, 250, 0.55)',
-                fontSize: 16,
+                fontSize: TR.axisLabel,
                 formatter: compactNum,
             },
             splitLine: { lineStyle: { color: 'rgba(255,255,255,0.04)', type: 'dashed' } },
@@ -297,6 +299,14 @@ const TrendCharts = ({ mode, dailyData, hourlyData, hourlyDataForDemand, scatter
         const facets = {};
 
         scatterData.forEach(d => {
+            // Drop placeholder rows whose underlying table id is "0" —
+            // these are config-only entries that shouldn't show up as
+            // a real ranking row (they cluster into a phantom "0" bar
+            // at the bottom of every table-grouped chart). Slot 33 is
+            // the raw tableID per the scatter tuple contract.
+            const rawTableId = String(d[33] || '').trim();
+            if (rawTableId === '0' || rawTableId === '') return;
+
             const fKey = facetField ? getDimValue(d, facetField) : 'All';
             const gKey = getDimValue(d, groupField);
 
@@ -383,7 +393,7 @@ const TrendCharts = ({ mode, dailyData, hourlyData, hourlyDataForDemand, scatter
                     xAxis: {
                         type: 'value',
                         axisLabel: {
-                            color: 'rgba(255,255,255,0.6)', fontSize: 18,
+                            color: 'rgba(255,255,255,0.6)', fontSize: TR.rankAxis,
                             formatter: (val) => {
                                 const absVal = Math.abs(val);
                                 const sign = val < 0 ? '-' : '';
@@ -400,7 +410,7 @@ const TrendCharts = ({ mode, dailyData, hourlyData, hourlyDataForDemand, scatter
                         data: facet.chartData.map(d => d.label).reverse(),
                         axisLabel: {
                             color: 'rgba(255,255,255,0.8)',
-                            fontSize: 18
+                            fontSize: TR.rankAxis
                         }
                     },
                     series: [{
@@ -434,7 +444,7 @@ const TrendCharts = ({ mode, dailyData, hourlyData, hourlyDataForDemand, scatter
                             show: true,
                             position: 'right',
                             color: '#fff',
-                            fontSize: 18,
+                            fontSize: TR.rankLabel,
                             formatter: (params) => {
                                 if (kpiInfo.isPercent) return (params.value * 100).toFixed(1) + '%';
                                 return params.value >= 1000 ? (params.value / 1000).toFixed(1) + 'K' : params.value.toFixed(0);

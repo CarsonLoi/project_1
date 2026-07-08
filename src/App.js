@@ -20,10 +20,14 @@ import {
 import CasinoIcon from '@mui/icons-material/Casino';
 import InsightsIcon from '@mui/icons-material/Insights';
 import TrendingUpIcon from '@mui/icons-material/TrendingUp';
+import GridViewIcon from '@mui/icons-material/GridView';
+import AttachMoneyIcon from '@mui/icons-material/AttachMoney';
 import RefreshIcon from '@mui/icons-material/Refresh';
 
 import TrendSeekerDashboard from './trend/TrendSeekerDashboard';
 import PerformanceDashboard from './performance/PerformanceDashboard';
+import SpreadDashboard from './spread/SpreadDashboard';
+import PricingDashboard from './pricing/PricingDashboard';
 
 export const NAV_HEIGHT = 52;
 
@@ -51,6 +55,20 @@ const TABS = [
     icon: InsightsIcon,
     accent: '#5597e6',
     subtitle: 'Floor KPI analytics · daily / hourly / WD',
+  },
+  {
+    to: '/spread',
+    label: 'Spread Scheduling',
+    icon: GridViewIcon,
+    accent: '#5ae6b0',
+    subtitle: 'Assign shifts to tables · versioned by date',
+  },
+  {
+    to: '/pricing',
+    label: 'Table Pricing',
+    icon: AttachMoneyIcon,
+    accent: '#e0af68',
+    subtitle: 'Assign table minimums · versioned by date',
   },
 ];
 
@@ -299,6 +317,8 @@ export default function App() {
             <Routes>
               <Route path="/trend" element={<TrendSeekerDashboard />} />
               <Route path="/performance" element={<PerformanceDashboard />} />
+              <Route path="/spread" element={<SpreadDashboard />} />
+              <Route path="/pricing" element={<PricingDashboard />} />
               <Route path="*" element={<Navigate to="/trend" replace />} />
             </Routes>
           </Box>
