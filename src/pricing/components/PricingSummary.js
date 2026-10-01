@@ -275,7 +275,7 @@ export default function PricingSummary({
                         </Box>
                         <Box component="tr">
                             <Box component="td" sx={{ py: SF.rowGapY, px: 0.5 }}>
-                                <Typography sx={{ color: 'rgba(220,245,255,0.75)', fontSize: SF.header, fontWeight: 700 }}>Wtd avg min</Typography>
+                                <Typography sx={{ color: 'rgba(220,245,255,0.75)', fontSize: SF.header, fontWeight: 700 }}>Avg. Tablemin</Typography>
                             </Box>
                             {[...grid.groups, 'All'].map((s) => (
                                 <Box component="td" key={s} sx={{ py: SF.rowGapY, px: 1, textAlign: 'right', fontVariantNumeric: 'tabular-nums', fontSize: SF.cell, fontWeight: 800, color: '#7adfff' }}>
@@ -337,7 +337,7 @@ export default function PricingSummary({
                                 </Box>
                                 <Box component="tr">
                                     <Box component="td" sx={{ py: SF.rowGapY, px: 0.5 }}>
-                                        <Typography sx={{ color: 'rgba(220,245,255,0.75)', fontSize: SF.header, fontWeight: 700 }}>Wtd avg min</Typography>
+                                        <Typography sx={{ color: 'rgba(220,245,255,0.75)', fontSize: SF.header, fontWeight: 700 }}>Avg. Tablemin</Typography>
                                     </Box>
                                     <Box component="td" colSpan={2} sx={{ ...cellSx(true), color: '#7adfff', borderBottom: 'none' }}>{fmtAvg(wAvgFrom((id) => compare.plan.byTier.get(id)?.All, compare.plan.totals.All))}</Box>
                                     <Box component="td" colSpan={2} sx={{ ...cellSx(true), color: '#9ece6a', borderBottom: 'none' }}>{fmtAvg(wAvgFrom((id) => compare.actual.byTier.get(id), compare.actual.total))}</Box>

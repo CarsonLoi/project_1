@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   HashRouter,
   Routes,
@@ -22,12 +22,17 @@ import InsightsIcon from '@mui/icons-material/Insights';
 import TrendingUpIcon from '@mui/icons-material/TrendingUp';
 import GridViewIcon from '@mui/icons-material/GridView';
 import AttachMoneyIcon from '@mui/icons-material/AttachMoney';
+import HotelIcon from '@mui/icons-material/Hotel';
+import SensorsIcon from '@mui/icons-material/Sensors';
 import RefreshIcon from '@mui/icons-material/Refresh';
 
 import TrendSeekerDashboard from './trend/TrendSeekerDashboard';
 import PerformanceDashboard from './performance/PerformanceDashboard';
 import SpreadDashboard from './spread/SpreadDashboard';
 import PricingDashboard from './pricing/PricingDashboard';
+import LiveWinDashboard from './live/LiveWinDashboard';
+import HotelDashboard from './hotel/HotelDashboard';
+import RealtimeDashboard from './realtime/RealtimeDashboard';
 
 export const NAV_HEIGHT = 52;
 
@@ -70,6 +75,27 @@ const TABS = [
     accent: '#e0af68',
     subtitle: 'Assign table minimums · versioned by date',
   },
+  {
+    to: '/live',
+    label: 'Live Casino Win',
+    icon: CasinoIcon,
+    accent: '#ff7a7a',
+    subtitle: 'Real-time win/loss per table + top players',
+  },
+  {
+    to: '/hotel',
+    label: 'Hotel Segments',
+    icon: HotelIcon,
+    accent: '#7dcfff',
+    subtitle: 'Same KPI across 6 hotel-stayer segments',
+  },
+  {
+    to: '/realtime',
+    label: 'Real-time Floor',
+    icon: SensorsIcon,
+    accent: '#6ad08f',
+    subtitle: 'Live today heatmap · auto-refresh',
+  },
 ];
 
 function NavBar() {
@@ -84,6 +110,13 @@ function NavBar() {
   }, []);
 
   const onTrend = location.pathname.startsWith('/trend');
+
+  // Keep the active tab visible when the tab row is scrolled.
+  const tabsRef = useRef(null);
+  useEffect(() => {
+    const active = tabsRef.current && tabsRef.current.querySelector('a.active');
+    if (active) active.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, [location.pathname]);
 
   return (
     <Box
@@ -103,7 +136,7 @@ function NavBar() {
       }}
     >
       {/* Brand */}
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mr: 1.5 }}>
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mr: 1.5, flexShrink: 0 }}>
         <Box
           sx={{
             width: 30,
@@ -135,7 +168,8 @@ function NavBar() {
 
       <Box
         sx={{
-          width: 1,
+          width: '1px', // a bare 1 in sx means 100%
+          flexShrink: 0,
           height: 28,
           bgcolor: 'rgba(255,255,255,0.08)',
           mr: 1.5,
@@ -143,7 +177,13 @@ function NavBar() {
       />
 
       {/* Tabs */}
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.4 }}>
+      {/* Shrinks and scrolls sideways on narrow screens — eight tabs no
+          longer fit at 1280px, and clipping hid the last ones entirely. */}
+      <Box ref={tabsRef} sx={{
+        display: 'flex', alignItems: 'center', gap: 0.4,
+        flex: '0 1 auto', minWidth: 0, overflowX: 'auto',
+        scrollbarWidth: 'thin', scrollbarColor: 'rgba(255,255,255,0.15) transparent',
+      }}>
         {TABS.map((t) => {
           const Icon = t.icon;
           return (
@@ -319,6 +359,9 @@ export default function App() {
               <Route path="/performance" element={<PerformanceDashboard />} />
               <Route path="/spread" element={<SpreadDashboard />} />
               <Route path="/pricing" element={<PricingDashboard />} />
+              <Route path="/live" element={<LiveWinDashboard />} />
+              <Route path="/hotel" element={<HotelDashboard />} />
+              <Route path="/realtime" element={<RealtimeDashboard />} />
               <Route path="*" element={<Navigate to="/trend" replace />} />
             </Routes>
           </Box>

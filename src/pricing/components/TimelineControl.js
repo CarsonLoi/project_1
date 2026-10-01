@@ -31,6 +31,8 @@ export default function TimelineControl({
     onPlaying,
     tickMs = 1000,
     colorAtHour,
+    coreHours = null,   // Auto-plan core hours: marked; other hours copy the core hour before them
+    coreOf = null,
 }) {
     const timerRef = useRef(null);
     useEffect(() => {
@@ -97,6 +99,8 @@ export default function TimelineControl({
             <Stack direction="row" spacing={0.3} sx={{ flex: 1, minWidth: 0 }}>
                 {GAMING_HOURS.map((h) => {
                     const active = h === currentHour;
+                    const isCore = coreHours ? coreHours.includes(h) : false;
+                    const copies = coreHours && coreOf && !isCore ? coreOf(h) : null;
                     // No period fill — only the SELECTED hour is highlighted.
                     const tint = active ? '#7adfff' : (colorAtHour ? colorAtHour(h) : 'rgba(255,255,255,0.05)');
                     return (
@@ -104,7 +108,7 @@ export default function TimelineControl({
                             key={h}
                             onClick={() => { onPlaying(false); onCurrentHour(h); }}
                             sx={{
-                                flex: 1, minWidth: 18, height: 26, cursor: 'pointer',
+                                flex: 1, minWidth: 18, height: 26, cursor: 'pointer', position: 'relative',
                                 display: 'flex', alignItems: 'center', justifyContent: 'center',
                                 bgcolor: tint,
                                 border: active ? '2px solid #7adfff' : '1px solid rgba(255,255,255,0.08)',
@@ -112,10 +116,12 @@ export default function TimelineControl({
                                 transition: 'transform 120ms, border-color 120ms',
                                 '&:hover': active ? undefined : { transform: 'translateY(-1px)', bgcolor: 'rgba(122,223,255,0.12)' },
                             }}
-                            title={`${String(h).padStart(2, '0')}:00`}
+                            title={isCore ? `${String(h).padStart(2, '0')}:00 · core hour` : copies != null ? `${String(h).padStart(2, '0')}:00 · copies ${String(copies).padStart(2, '0')}:00` : `${String(h).padStart(2, '0')}:00`}
+                            aria-label={isCore ? `${String(h).padStart(2, '0')}:00, core hour` : `${String(h).padStart(2, '0')}:00`}
                         >
+                            {isCore ? <Box aria-hidden="true" sx={{ position: 'absolute', left: 3, right: 3, bottom: 2, height: 2, borderRadius: 1, bgcolor: active ? '#06182a' : '#7adfff' }} /> : null}
                             <Typography sx={{
-                                fontSize: PRICING_FONTS.timeline.tick, fontWeight: active ? 800 : 600, lineHeight: 1,
+                                fontSize: PRICING_FONTS.timeline.tick, fontWeight: active || isCore ? 800 : 600, lineHeight: 1,
                                 color: active ? '#06182a' : 'rgba(255,255,255,0.85)',
                                 textShadow: active ? 'none' : '0 1px 2px rgba(0,0,0,0.6)',
                                 fontVariantNumeric: 'tabular-nums', userSelect: 'none',

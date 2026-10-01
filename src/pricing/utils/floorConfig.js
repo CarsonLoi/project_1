@@ -29,11 +29,14 @@ export function liveFloorTables(forDate = null) {
             key:         gametypeTableKey(cfg.game, cfg.table),
             label:       cfg.game ? `${cfg.game}${cfg.table}` : String(cfg.table),
             gametype:    cfg.game,
+            table:       String(cfg.table),
             x:           Number(cfg.x) || 0,
             y:           Number(cfg.y) || 0,
             rotation:    Number(cfg.rotation) || 0,
             pit:         String(cfg.pit ?? ''),
             area:        cfg.Location || cfg.area || '',
+            // Zone = pod, for Auto-plan zone caps (falls back to the pit).
+            zone:        String(cfg.zone ?? cfg.pit ?? ''),
             // Macro segment ("MS" / "PM") + sub-segment, derived from the pit.
             segment:     segmentForPit(cfg.pit),
             sub_segment: subSegmentForPit(cfg.pit, cfg.sub_segment || cfg.Location || ''),

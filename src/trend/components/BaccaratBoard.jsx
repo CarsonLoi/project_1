@@ -190,7 +190,7 @@ function generateShoe(shoeId) {
 //   - When the column is full (row 5) and same side continues, it "dragon tails":
 //     it moves RIGHT at row 5, occupying new columns at row 5 only.
 //   - Ties attach as slashes on the most recent non-tie cell.
-function buildBigRoad(hands, rows = 6) {
+export function buildBigRoad(hands, rows = 6) {
   // Use a sparse 2D structure: grid[col][row] = cell
   const grid = [];
   const setCell = (c, r, cell) => {
@@ -268,6 +268,9 @@ function extras(h) {
     lucky6: !!h.lucky6,
     lucky7: !!h.lucky7,
     monkey: !!h.monkey,
+    // Which hands this cell stands for (a streak cell plus any ties
+    // merged into it), so a caller can highlight a patron's hands.
+    handNos: h.handNo != null ? [h.handNo] : [],
   };
 }
 function mergeExtras(cell, h) {
@@ -276,6 +279,7 @@ function mergeExtras(cell, h) {
   cell.lucky6 ||= !!h.lucky6;
   cell.lucky7 ||= !!h.lucky7;
   cell.monkey ||= !!h.monkey;
+  if (h.handNo != null) (cell.handNos ||= []).push(h.handNo);
 }
 
 // ---------- Derived roads (Big Eye / Small / Cockroach) ----------
@@ -300,7 +304,7 @@ function mergeExtras(cell, h) {
 //     They have the same state iff streakLen(N-k) != R (because the only point
 //     where they disagree is exactly when the column has stopped at row R).
 //     So: red if streakLen(N-k) != R, blue if streakLen(N-k) == R.
-function buildDerivedRoad(hands, k, maxRows = 6) {
+export function buildDerivedRoad(hands, k, maxRows = 6) {
   // Build streak sequence from logical hands (B/P only; ties merge into the
   // previous streak without creating a new one).
   const streakLens = [];
@@ -383,7 +387,7 @@ function colHeight(bigRoad, c) {
 }
 
 // ---------- Stats ----------
-function computeStats(hands) {
+export function computeStats(hands) {
   let B = 0, P = 0, T = 0, L6 = 0, L7 = 0, pairs = 0, monkey = 0;
   for (const h of hands) {
     if (h.result === 'B') B++;
@@ -400,9 +404,9 @@ function computeStats(hands) {
 // =====================================================================
 // Visual constants
 // =====================================================================
-const BANKER = '#c8202b';
-const PLAYER = '#1f4fb8';
-const TIE = '#1f9d4d';
+export const BANKER = '#c8202b';
+export const PLAYER = '#1f4fb8';
+export const TIE = '#1f9d4d';
 const PANEL_BG = '#cfe1f5';
 const GRID_LINE = '#a9c4dc';
 const BOARD_BG = '#0e3a6b';
@@ -410,7 +414,7 @@ const BOARD_BG = '#0e3a6b';
 // =====================================================================
 // Cell renderers
 // =====================================================================
-function BigRoadCell({ cell, size }) {
+export function BigRoadCell({ cell, size }) {
   if (!cell) return <div style={{ width: size, height: size }} />;
   const color = cell.result === 'B' ? BANKER : cell.result === 'P' ? PLAYER : null;
   const stroke = 2.6;
@@ -528,7 +532,7 @@ function BigRoadCell({ cell, size }) {
   );
 }
 
-function DerivedDotCell({ mark, size, filled }) {
+export function DerivedDotCell({ mark, size, filled }) {
   if (!mark) return <div style={{ width: size, height: size }} />;
   const color = mark === 'R' ? BANKER : PLAYER;
   const r = size * 0.32;
@@ -540,7 +544,7 @@ function DerivedDotCell({ mark, size, filled }) {
   );
 }
 
-function CockroachCell({ mark, size }) {
+export function CockroachCell({ mark, size }) {
   if (!mark) return <div style={{ width: size, height: size }} />;
   const color = mark === 'R' ? BANKER : PLAYER;
   return (
@@ -551,7 +555,7 @@ function CockroachCell({ mark, size }) {
   );
 }
 
-function BeadPlateCell({ hand, size }) {
+export function BeadPlateCell({ hand, size }) {
   if (!hand) return <div style={{ width: size, height: size }} />;
   const color = hand.result === 'B' ? BANKER : hand.result === 'P' ? PLAYER : TIE;
   const label = hand.result === 'B' ? '庄' : hand.result === 'P' ? '闲' : '和';
@@ -606,7 +610,7 @@ function BeadPlateCell({ hand, size }) {
 // =====================================================================
 // Grid wrappers
 // =====================================================================
-function RoadGrid({ cols, rows, cellSize, render, minCols, fillWidth = true }) {
+export function RoadGrid({ cols, rows, cellSize, render, minCols, fillWidth = true }) {
   const dataMaxCol = Math.max(cols.length, minCols);
   return (
     <div style={{
@@ -1043,7 +1047,7 @@ function SideBetTags({ hand }) {
   );
 }
 
-function chunkBeadPlate(hands, rows) {
+export function chunkBeadPlate(hands, rows) {
   const cols = [];
   for (let i = 0; i < hands.length; i++) {
     const c = Math.floor(i / rows);

@@ -21,6 +21,7 @@ import BackspaceOutlinedIcon from '@mui/icons-material/BackspaceOutlined';
 import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome';
 import HistoryIcon from '@mui/icons-material/History';
 import LockIcon from '@mui/icons-material/Lock';
+import PushPinIcon from '@mui/icons-material/PushPin';
 import LockOpenIcon from '@mui/icons-material/LockOpen';
 import { formatMinimum, UNPRICED_COLOR } from '../constants/defaultTiers';
 import { readPrice } from '../utils/pricingModel';
@@ -49,9 +50,14 @@ export default function TierSelectionBar({
     onHistDowsChange,    // (next) => void
     histHours,           // number[] reference hours (non-consecutive ok) | null = all
     onHistHoursChange,   // (next) => void
+    histAllHours,        // boolean — apply to all 24 hours (match hour-for-hour)
+    onHistAllHoursChange,// (next: boolean) => void
     histLoading,         // boolean
     flexEnabled = true,  // global Min–Max range switch — hides boundary panel when off
     boundaryPresets = [], // [{ id, label, min, max }] quick Min–Max combos
+    onPin = null,        // () => void — pin the selection (Auto-plan keeps its price)
+    onUnpin = null,      // () => void
+    pinnedCount = 0,     // how many of the selection are pinned
 }) {
     const [histOpen, setHistOpen] = useState(false);
     const [fixed, setFixed] = useState(false); // mark selection as fixed-price (locked)
@@ -414,12 +420,12 @@ export default function TierSelectionBar({
                             these hours. Multi-select so non-consecutive hours
                             (e.g. 03:00 + 05:00 + 22:00) can be picked. */}
                         <Typography sx={{ color: 'rgba(255,255,255,0.6)', fontSize: SB.histLabel, fontWeight: 700 }}>Hours</Typography>
-                        <Select size="small" multiple displayEmpty
+                        <Select size="small" multiple displayEmpty disabled={!!histAllHours}
                             value={Array.isArray(histHours) ? histHours : []}
                             onChange={(e) => { const v = e.target.value; onHistHoursChange(v && v.length ? [...v].sort((a, b) => a - b) : null); }}
-                            renderValue={(sel) => (!sel || sel.length === 0 ? 'all' : sel.map((h) => String(h).padStart(2, '0')).join(', '))}
+                            renderValue={(sel) => (histAllHours ? 'match' : (!sel || sel.length === 0 ? 'all' : sel.map((h) => String(h).padStart(2, '0')).join(', ')))}
                             MenuProps={{ PaperProps: { sx: { maxHeight: 320, bgcolor: 'rgba(18,22,34,0.98)', color: '#fff', border: '1px solid rgba(122,200,220,0.25)' } } }}
-                            sx={{ ...tierSelectSx, minWidth: 96, maxWidth: 240 }}>
+                            sx={{ ...tierSelectSx, minWidth: 96, maxWidth: 240, opacity: histAllHours ? 0.45 : 1 }}>
                             {Array.from({ length: 24 }, (_, h) => (
                                 <MenuItem key={h} value={h} sx={{ fontSize: SB.select, py: 0.2 }}>
                                     <Checkbox size="small" checked={(Array.isArray(histHours) ? histHours : []).includes(h)}
@@ -428,11 +434,31 @@ export default function TierSelectionBar({
                                 </MenuItem>
                             ))}
                         </Select>
-                        {Array.isArray(histHours) && histHours.length > 0 && (
+                        {Array.isArray(histHours) && histHours.length > 0 && !histAllHours && (
                             <Button size="small" onClick={() => onHistHoursChange(null)}
                                 sx={{ minWidth: 0, px: 0.8, fontSize: SB.histClear, color: 'rgba(255,255,255,0.5)', textTransform: 'none' }}>
                                 all
                             </Button>
+                        )}
+                        {/* All-24-hours auto-match — each planning hour reads
+                            from the same historical hour (7→7, 8→8, …). */}
+                        {onHistAllHoursChange && (
+                            <Box onClick={() => onHistAllHoursChange(!histAllHours)}
+                                title="Apply the reference window to every planning hour (0..23). Each hour reads from the same historical hour (7am → 7am, 8am → 8am, …)."
+                                sx={{
+                                    height: 26, px: 1, borderRadius: 1, cursor: 'pointer', userSelect: 'none',
+                                    display: 'flex', alignItems: 'center', gap: 0.6, whiteSpace: 'nowrap',
+                                    fontSize: SB.histLabel, fontWeight: 800, letterSpacing: 0.3,
+                                    color: histAllHours ? '#0a1a2c' : '#9ece6a',
+                                    bgcolor: histAllHours ? '#9ece6a' : 'rgba(158,206,106,0.08)',
+                                    border: `1px solid ${histAllHours ? '#9ece6a' : 'rgba(158,206,106,0.4)'}`,
+                                    '&:hover': { bgcolor: histAllHours ? '#b5e08a' : 'rgba(158,206,106,0.16)' },
+                                }}>
+                                <Box sx={{ width: 22, height: 12, borderRadius: 6, position: 'relative', bgcolor: histAllHours ? 'rgba(10,26,44,0.35)' : 'rgba(255,255,255,0.15)', transition: 'background-color 140ms' }}>
+                                    <Box sx={{ position: 'absolute', top: 1, left: histAllHours ? 11 : 1, width: 10, height: 10, borderRadius: '50%', bgcolor: histAllHours ? '#0a1a2c' : '#9ece6a', transition: 'left 140ms' }} />
+                                </Box>
+                                All 24h
+                            </Box>
                         )}
                         <Box sx={{ flex: 1 }} />
                         <Button
@@ -448,11 +474,29 @@ export default function TierSelectionBar({
                                 '&:hover': { bgcolor: '#b5e08a' },
                             }}
                         >
-                            Apply to {count}
+                            {histAllHours ? `Apply to ${count} × 24h` : `Apply to ${count}`}
                         </Button>
                     </Stack>
                 </Box>
             )}
+
+            {/* Pin for Auto-plan — pinned tables keep their price when it solves again. */}
+            {onPin ? (
+                <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 1.2, px: 1, py: 0.8, borderRadius: 1.2, border: '1px dashed rgba(255,205,120,0.45)', bgcolor: 'rgba(255,205,120,0.05)' }}>
+                    <PushPinIcon sx={{ fontSize: 17, color: '#ffcd78' }} />
+                    <Typography sx={{ fontSize: 13, color: 'rgba(255,255,255,0.8)', flex: 1 }}>
+                        {pinnedCount ? `${pinnedCount} of ${count} pinned — Auto-plan keeps their price` : 'Pin to keep these prices when Auto-plan solves'}
+                    </Typography>
+                    <Button size="small" onClick={onPin} disabled={pinnedCount === count}
+                        sx={{ textTransform: 'none', fontWeight: 800, color: '#0a1a2c', bgcolor: '#ffcd78', px: 1.4, '&:hover': { bgcolor: '#ffe0a0' }, '&.Mui-disabled': { bgcolor: 'rgba(255,255,255,0.1)', color: 'rgba(255,255,255,0.4)' } }}>
+                        Pin
+                    </Button>
+                    <Button size="small" onClick={onUnpin} disabled={!pinnedCount}
+                        sx={{ textTransform: 'none', fontWeight: 700, color: '#ffcd78', border: '1px solid rgba(255,205,120,0.45)', px: 1.2, '&.Mui-disabled': { color: 'rgba(255,255,255,0.35)', borderColor: 'rgba(255,255,255,0.12)' } }}>
+                        Unpin
+                    </Button>
+                </Stack>
+            ) : null}
 
             {/* Commit / demand / clear. Apply is the only manual commit. */}
             <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 1.2 }}>

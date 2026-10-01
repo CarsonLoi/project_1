@@ -43,7 +43,7 @@ import TimelineControl, { GAMING_HOURS as PRICING_HOURS } from './components/Tim
 import { liveFloorTables } from './utils/floorConfig';
 import { SEGMENT_ORDER, DEFAULT_SEGMENT, sortSubSegments } from '../shared/constants/pitSegments';
 import { fetchScheduleHours } from './utils/scheduleSource';
-import { fetchPricingPlan, pricingRowsToByHour } from './utils/pricingSource';
+import { fetchPricingPlan, pricingRowsToByHour, uploadPricingPlan } from './utils/pricingSource';
 import { FLOOR_ASPECT, FLOOR_WIDTH_FR, SUMMARY_WIDTH_FR } from './constants/floorLayout';
 import { fetchDailyData, fetchHourlyData, gametypeTableKey } from '../performance/utils/dataSource';
 import { aggregateDemandByTable, buildSuggestions, sameWeekdayTrailing } from './utils/pricingSuggest';
@@ -52,6 +52,7 @@ import { deriveShiftsFromOpen } from './utils/pricingCounts';
 
 import TierPalette from './components/TierPalette';
 import TierSelectionBar from './components/TierSelectionBar';
+import TableRulePanel from './components/autoplan/TableRulePanel';
 import TierLibrary from './components/TierLibrary';
 import PricingSummary from './components/PricingSummary';
 import PricingHourlyCharts from './components/PricingHourlyCharts';
@@ -63,7 +64,16 @@ import {
 } from './utils/pricingStorage';
 import { formatMinimum } from './constants/defaultTiers';
 import { daypartForHour, daypartHours } from './constants/defaultDayparts';
-import { readPrice, orderTriple } from './utils/pricingModel';
+import { readPrice, orderTriple, isPinned, isAuto as isAutoPrice } from './utils/pricingModel';
+import useAutoPlan from './components/autoplan/useAutoPlan';
+import AutoPlanBar from './components/autoplan/AutoPlanBar';
+import TargetsPanel from './components/autoplan/TargetsPanel';
+import RulesPanel, { ruleSummary } from './components/autoplan/RulesPanel';
+import CriteriaPanel from './components/autoplan/CriteriaPanel';
+import TuneIcon from '@mui/icons-material/Tune';
+import ResultPanel from './components/autoplan/ResultPanel';
+import ChangeStrip from './components/autoplan/ChangeStrip';
+import { CORE_HOURS, DAY_TYPES, coreFor, blockHours, prevCore } from './utils/autoplan/core';
 import { PRICING_FONTS } from './constants/fontSizes';
 
 const TB = PRICING_FONTS.toolbar;
@@ -72,6 +82,21 @@ const PF = PRICING_FONTS;
 const todayIso = () => new Date().toISOString().slice(0, 10);
 
 // Trigger a browser download of `obj` as a pretty-printed JSON file.
+// Trigger a browser download of plain text (the Auto-plan change sheet).
+function downloadText(filename, text, type = 'text/csv') {
+    try {
+        const blob = new Blob([text], { type });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = filename;
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn('[Pricing] download failed:', e?.message);
+    }
+}
+
 function downloadJson(filename, obj) {
     try {
         const blob = new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json' });
@@ -272,6 +297,10 @@ export default function PricingDashboard() {
     const [histRange, setHistRange] = useState(() => ({ from: addDaysIso(date, -28), to: addDaysIso(date, -1) }));
     const [histDows, setHistDows] = useState([]);        // [] = all weekdays
     const [histHours, setHistHours] = useState(null);    // number[] (non-consecutive ok) | null = all hours
+    // "Match hour-by-hour" — when on, the reference window is applied to
+    // EVERY planning hour in one click, each hour reading from the same
+    // historical hour (7am → 7am, 8am → 8am, …). Ref-Hours is ignored.
+    const [histAllHours, setHistAllHours] = useState(false);
     const [histLoading, setHistLoading] = useState(false);
     // Scheduling plan (spread DB) — which tables are scheduled OPEN at each
     // hour for the selected date. Keyed off the same `date` as the floor
@@ -285,6 +314,19 @@ export default function PricingDashboard() {
     const onTiersChange = useCallback((nextTiers) => setStore((prev) => setTiers(prev, nextTiers)), []);
     const onDaypartsChange = useCallback((nextDp) => setStore((prev) => setDayparts(prev, nextDp)), []);
     const tables = useMemo(() => liveFloorTables(date), [date]);
+
+    // ── Auto-plan (third mode) — targets × rules → a solved draft ─────
+    const autoMode = viewMode === 'autoplan';
+    const ap = useAutoPlan({ store, setStore, tiers, tables, active: autoMode });
+    const [apTab, setApTab] = useState('targets');
+    const [apScope, setApScope] = useState('wd');           // Targets: day type id or 'd:YYYY-MM-DD'
+    const [apSub, setApSub] = useState(null);
+    const [applyOpen, setApplyOpen] = useState(false);
+    const [apToast, setApToast] = useState('');
+    // Planning: a paint prices the whole core-hour block (07–10 …) or only this hour.
+    const [blockEdit, setBlockEdit] = useState(true);
+    // What the floor, summary and charts read: the draft overlaid in Auto-plan.
+    const viewStore = useMemo(() => (autoMode ? ap.overlay(store, date) : store), [autoMode, ap.overlay, store, date]); // eslint-disable-line react-hooks/exhaustive-deps
     // Slicer options = the game types actually present in the filtered
     // liveFloorTables result for the selected date.
     const gametypes = useMemo(
@@ -320,7 +362,16 @@ export default function PricingDashboard() {
     const activeUnitId = `h_${scrubHour}`;
 
     // Assignments for the ACTIVE unit (hour or period).
-    const assignments = getDaypartAssignments(store, date, activeUnitId);
+    const assignments = getDaypartAssignments(viewStore, date, activeUnitId);
+
+    // Hours a paint writes to, whether a table is open at an hour, and
+    // whether this date already carries Auto-plan prices (then a paint pins).
+    const editHours = useMemo(() => (blockEdit ? blockHours(coreFor(scrubHour)) : [scrubHour]), [blockEdit, scrubHour]);
+    const canPriceAt = (k, h) => !openByHour || (openByHour.get(h) || new Set()).has(k);
+    const pinOnPaint = useMemo(
+        () => Object.values(store.plans?.[date]?.byDaypart || {}).some((b) => Object.values(b.assignments || {}).some(isAutoPrice)),
+        [store.plans, date],
+    );
 
     // Only SCHEDULED-OPEN tables may receive a price this hour — closed
     // tables never record any pricing (manual, apply, suggest, or history).
@@ -338,32 +389,61 @@ export default function PricingDashboard() {
     // Painting arms ONE tier → a fixed price (base = min = max). The
     // adjustable Min/Max boundary is set via the selection bar.
     const assignOne = useCallback((tableKey, tierId) => {
+        if (autoMode) return;                       // the draft is read-only
         setStore((prev) => {
-            const cur = getDaypartAssignments(prev, date, activeUnitId);
-            const next = { ...cur };
-            if (!tierId || tierId === '__none') delete next[tableKey];
-            else if (canPriceKey(tableKey)) next[tableKey] = { base: tierId, min: tierId, max: tierId };
-            else return prev;                       // closed table → no price
-            return setDaypartAssignments(prev, date, activeUnitId, next);
+            let s = prev;
+            for (const h of editHours) {
+                const next = { ...getDaypartAssignments(s, date, `h_${h}`) };
+                if (!tierId || tierId === '__none') delete next[tableKey];
+                else if (canPriceAt(tableKey, h)) next[tableKey] = { base: tierId, min: tierId, max: tierId, ...(pinOnPaint ? { pin: true } : {}) };
+                else continue;                      // closed at this hour → no price
+                s = setDaypartAssignments(s, date, `h_${h}`, next);
+            }
+            return s;
         });
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [date, activeUnitId, openWriteSet]);
+    }, [date, editHours, openByHour, pinOnPaint, autoMode]);
 
     // Fixed price for the whole selection (base = min = max). null = clear.
     const assignToSelection = useCallback((tierId) => {
-        if (selectedKeys.size === 0) return;
+        if (selectedKeys.size === 0 || autoMode) return;
         setStore((prev) => {
-            const cur = getDaypartAssignments(prev, date, activeUnitId);
-            const next = { ...cur };
-            for (const k of selectedKeys) {
-                if (!tierId || tierId === '__none') delete next[k];
-                else if (canPriceKey(k)) next[k] = { base: tierId, min: tierId, max: tierId };
+            let s = prev;
+            for (const h of editHours) {
+                const next = { ...getDaypartAssignments(s, date, `h_${h}`) };
+                for (const k of selectedKeys) {
+                    if (!tierId || tierId === '__none') delete next[k];
+                    else if (canPriceAt(k, h)) next[k] = { base: tierId, min: tierId, max: tierId, ...(pinOnPaint ? { pin: true } : {}) };
+                }
+                s = setDaypartAssignments(s, date, `h_${h}`, next);
             }
-            return setDaypartAssignments(prev, date, activeUnitId, next);
+            return s;
         });
         setSelectedKeys(new Set());
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [date, activeUnitId, selectedKeys, openWriteSet]);
+    }, [date, editHours, selectedKeys, openByHour, pinOnPaint, autoMode]);
+
+    // Pin / unpin the selection for the block (or hour) — pinned tables keep
+    // their price when Auto-plan solves again.
+    const setPinForSelection = useCallback((on) => {
+        if (selectedKeys.size === 0) return;
+        setStore((prev) => {
+            let s = prev;
+            for (const h of editHours) {
+                const next = { ...getDaypartAssignments(s, date, `h_${h}`) };
+                let touched = false;
+                for (const k of selectedKeys) {
+                    if (!next[k] || typeof next[k] !== 'object') continue;
+                    const v = { ...next[k] };
+                    if (on) v.pin = true; else delete v.pin;
+                    next[k] = v; touched = true;
+                }
+                if (touched) s = setDaypartAssignments(s, date, `h_${h}`, next);
+            }
+            return s;
+        });
+        setSelectedKeys(new Set());
+    }, [selectedKeys, editHours, date]);
 
     // Apply an opening Base + adjustable [Min, Max] boundary to the whole
     // selection. Ids are re-ordered so min ≤ base ≤ max.
@@ -375,14 +455,17 @@ export default function PricingDashboard() {
             const value = (fixed || !flexEnabled)
                 ? { base: baseId, min: baseId, max: baseId, ...(fixed ? { fixed: true } : {}) }
                 : orderTriple(tm, minId || baseId, baseId, maxId || baseId);
-            const cur = getDaypartAssignments(prev, date, activeUnitId);
-            const next = { ...cur };
-            for (const k of selectedKeys) if (canPriceKey(k)) next[k] = { ...value };
-            return setDaypartAssignments(prev, date, activeUnitId, next);
+            let s = prev;
+            for (const h of editHours) {
+                const next = { ...getDaypartAssignments(s, date, `h_${h}`) };
+                for (const k of selectedKeys) if (canPriceAt(k, h)) next[k] = { ...value, ...(pinOnPaint ? { pin: true } : {}) };
+                s = setDaypartAssignments(s, date, `h_${h}`, next);
+            }
+            return s;
         });
         setSelectedKeys(new Set());
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [date, activeUnitId, selectedKeys, flexEnabled, openWriteSet]);
+    }, [date, editHours, selectedKeys, flexEnabled, openByHour, pinOnPaint]);
 
     // Lazily load + aggregate the demand reference, then derive per-table
     // suggestions. Window = same-weekday × 4 weeks of the planning date;
@@ -456,39 +539,57 @@ export default function PricingDashboard() {
             // Use the HOURLY feed so the reference-hours window can filter by
             // hour (each row carries its hour + tablemin histogram).
             const rows = (await fetchHourlyData({})) || [];
-            let agg = aggregateHistoryMin(rows, { from: histRange.from, to: histRange.to, dows: histDows, hours: histHours });
-            // If the chosen window has no data at all (e.g. planning far ahead
-            // of the available history), fall back to the most recent 28 dates
-            // present — DoW + reference-hours filters still apply.
-            if (agg.size === 0 && rows.length > 0) {
-                const recent = [...new Set(rows.map((r) => String(r.date).slice(0, 10)))].sort().slice(-28);
-                if (recent.length) {
-                    agg = aggregateHistoryMin(rows, { from: recent[0], to: recent[recent.length - 1], dows: histDows, hours: histHours });
+            // Resolve the effective date range once — with the same "fall back
+            // to the most recent 28 dates" behaviour used in single-hour mode.
+            let effFrom = histRange.from, effTo = histRange.to;
+            if (rows.length > 0) {
+                const probe = aggregateHistoryMin(rows, { from: effFrom, to: effTo, dows: histDows });
+                if (probe.size === 0) {
+                    const recent = [...new Set(rows.map((r) => String(r.date).slice(0, 10)))].sort().slice(-28);
+                    if (recent.length) { effFrom = recent[0]; effTo = recent[recent.length - 1]; }
                 }
             }
-            const sugg = buildHistorySuggestions(agg, tiers);
             const keys = [...selectedKeys];
-            let appliedCount = 0;
+            const hoursToDo = histAllHours ? Array.from({ length: 24 }, (_, h) => h) : [scrubHour];
+            let totalApplied = 0;
+            const hoursWithHits = [];
             setStore((prev) => {
-                const cur = getDaypartAssignments(prev, date, activeUnitId);
-                const next = { ...cur };
-                for (const k of keys) {
-                    const triple = sugg.get(k);
-                    if (triple && canPriceKey(k)) {   // closed tables get no price
-                        // Min–Max off → base-only (collapse the boundary).
+                let s = prev;
+                for (const h of hoursToDo) {
+                    const refHours = histAllHours ? [h] : histHours;
+                    const agg = aggregateHistoryMin(rows, { from: effFrom, to: effTo, dows: histDows, hours: refHours });
+                    const sugg = buildHistorySuggestions(agg, tiers);
+                    // Per-hour open set — closed tables that hour get no price.
+                    const openSet = openByHour ? (openByHour.get(h) || new Set()) : null;
+                    const canPrice = (k) => !openSet || openSet.has(k);
+                    const unitId = `h_${h}`;
+                    const cur = getDaypartAssignments(s, date, unitId);
+                    const next = { ...cur };
+                    let appliedH = 0;
+                    for (const k of keys) {
+                        if (!canPrice(k)) continue;
+                        const triple = sugg.get(k);
+                        if (!triple) continue;
                         next[k] = flexEnabled
                             ? { base: triple.base, min: triple.min, max: triple.max }
                             : { base: triple.base, min: triple.base, max: triple.base };
-                        appliedCount += 1;
+                        appliedH += 1;
+                    }
+                    if (appliedH > 0) {
+                        s = setDaypartAssignments(s, date, unitId, next);
+                        totalApplied += appliedH;
+                        hoursWithHits.push(h);
                     }
                 }
-                if (appliedCount === 0) return prev;
-                return setDaypartAssignments(prev, date, activeUnitId, next);
+                return totalApplied === 0 ? prev : s;
             });
-            if (appliedCount === 0) {
+            if (totalApplied === 0) {
                 window.alert('No historical table-minimum readings for the selected table(s) in this reference window. Try widening the date range or clearing the day-of-week filter.');
             } else {
                 setSelectedKeys(new Set());
+                if (histAllHours) {
+                    window.alert(`Loaded ${totalApplied} price cell${totalApplied === 1 ? '' : 's'} across ${hoursWithHits.length} hour${hoursWithHits.length === 1 ? '' : 's'} for ${date}.`);
+                }
             }
         } catch {
             window.alert('Could not load historical data for the suggestion.');
@@ -496,7 +597,7 @@ export default function PricingDashboard() {
             setHistLoading(false);
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [selectedKeys, histRange, histDows, histHours, tiers, date, activeUnitId, flexEnabled, openWriteSet]);
+    }, [selectedKeys, histRange, histDows, histHours, histAllHours, tiers, date, scrubHour, openByHour, flexEnabled]);
 
     // Warm the demand reference the first time a selection is made, so the
     // selection bar can show avg-bet / occupancy context before the user
@@ -603,10 +704,13 @@ export default function PricingDashboard() {
     // Tables whose shift is filtered out are also treated as closed.
     const closedKeys = useMemo(() => {
         const shiftOk = (k) => shiftFilter.length === 0 || shiftFilter.includes(shiftByKey.get(k));
+        // Auto-plan treats an unscheduled date as fully open (the solver
+        // prices every table), so the floor shows the draft, not black.
+        const allOpen = autoMode && !openByHour;
         const set = new Set();
-        for (const t of fTables) if (!openSet.has(t.key) || !shiftOk(t.key)) set.add(t.key);
+        for (const t of fTables) if ((!allOpen && !openSet.has(t.key)) || !shiftOk(t.key)) set.add(t.key);
         return set;
-    }, [openSet, fTables, shiftFilter, shiftByKey]);
+    }, [openSet, fTables, shiftFilter, shiftByKey, autoMode, openByHour]);
 
     // Native visualMap selection (SCATTER-ONLY table-min filter). Opaque
     // ECharts `selected` object, round-tripped. null = all selected. Resets
@@ -637,6 +741,10 @@ export default function PricingDashboard() {
     // treated as $0 so priced↔unpriced also counts as a change.
     const [changeHL, setChangeHL] = useState(false);
     const [compareHour, setCompareHour] = useState(null);
+    // Fixed-price (locked minimum) tables get a rectangle outline on the
+    // floor by default — this just toggles that overlay off when it's in
+    // the way; the underlying fixed/locked pricing is unaffected either way.
+    const [showFixedOutline, setShowFixedOutline] = useState(true);
     const tierMinMap = useMemo(() => new Map(tiers.map((t) => [t.id, t.min || 0])), [tiers]);
     const changeHighlights = useMemo(() => {
         const out = new Map();
@@ -658,6 +766,23 @@ export default function PricingDashboard() {
         return out;
     }, [changeHL, compareHour, openByHour, scrubHour, store, date, tierMinMap, shiftFilter, shiftByKey]);
 
+    // Auto-plan: outline tables whose price changed since the previous core
+    // hour (red = up, green = down), always on.
+    const autoChanges = useMemo(() => {
+        const out = new Map();
+        if (!autoMode) return out;
+        const pc = prevCore(coreFor(scrubHour));
+        if (pc == null) return out;
+        const a = getDaypartAssignments(viewStore, date, `h_${pc}`);
+        const b = getDaypartAssignments(viewStore, date, `h_${coreFor(scrubHour)}`);
+        for (const [k, v] of Object.entries(b)) {
+            if (!a[k]) continue;
+            const now = tierMinMap.get(readPrice(v)?.base) || 0, was = tierMinMap.get(readPrice(a[k])?.base) || 0;
+            if (now !== was) out.set(k, now > was ? 'up' : 'down');
+        }
+        return out;
+    }, [autoMode, scrubHour, viewStore, date, tierMinMap]);
+
     // Floor-map coloring map: table → tier id of the chosen value. Closed
     // tables are skipped here (the map paints them black via closedKeys).
     const mapAssignments = useMemo(() => {
@@ -672,6 +797,17 @@ export default function PricingDashboard() {
 
     // Raw { base, min, max, fixed } per table — for the floor tooltip.
     const priceByKey = useMemo(() => new Map(Object.entries(assignments)), [assignments]);
+
+    // Pinned tables — kept by Auto-plan; drawn with a gold outline.
+    // Auto-plan: tables with a manual price (a rule) in this date + block.
+    const manualKeys = useMemo(() => (autoMode ? new Set(Object.keys(((ap.cfg.manual || {})[date] || {})[coreFor(scrubHour)] || {})) : new Set()),
+        [autoMode, ap.cfg.manual, date, scrubHour]);
+    // Pinned tables; in Auto-plan a manual price shows its own (solid) outline instead.
+    const pinnedKeys = useMemo(() => {
+        const set = new Set();
+        for (const [k, v] of Object.entries(assignments)) if (isPinned(v) && !manualKeys.has(k)) set.add(k);
+        return set;
+    }, [assignments, manualKeys]);
 
     // Fixed-price tables — locked minimum, drawn with a rectangle overlay.
     const fixedKeys = useMemo(() => {
@@ -768,27 +904,34 @@ export default function PricingDashboard() {
         [planVersions, activeDaypartId]
     );
 
-    const doSaveVersion = useCallback(() => {
-        const name = window.prompt('Name this version (optional):', '') ?? '';
-        const trimmed = String(name).trim();
-        // Save the version in-app AND export it as a self-contained JSON file
-        // (date + name + every period's assignments + the tier/period config).
-        const versionNumber = (planVersions[0]?.versionNumber || 0) + 1;
-        const savedAtIso = new Date().toISOString();
-        const payload = {
+    // Build ONE date's plan document (every hour's assignments + the
+    // tier/table config) — no download, no store mutation, just the plain
+    // object. The ACTIVE date reuses the already-loaded `openByHour` (no
+    // re-fetch); any OTHER date fetches its own spread schedule on demand.
+    const buildOneDatePayload = useCallback(async (storeArg, forDate, trimmedName, savedAtIso, versionNumber) => {
+        const dTables = forDate === date ? tables : liveFloorTables(forDate);
+        let dOpenByHour = openByHour;
+        if (forDate !== date) {
+            try {
+                const rows = await fetchScheduleHours({ date: forDate });
+                const map = buildOpenByHour(rows);
+                dOpenByHour = map.size > 0 ? map : null;
+            } catch { dOpenByHour = null; }
+        }
+        return {
             kind: 'pricing_plan',
             schema: 2,
-            date,                              // the gaming date this plan is for
+            date: forDate,                     // the gaming date this plan is for
             revised_date: savedAtIso.slice(0, 10), // the day the plan was revised/saved
             exported_at: savedAtIso,
-            name: trimmed,
+            name: trimmedName,
             version: versionNumber,
             // Tier id → $ minimum, so the restructure script resolves each
             // table's price from the assignment's `base` tier id.
-            tiers: tiers.map((t) => ({ id: t.id, min: t.min, label: t.label || null })),
+            tiers: (storeArg.tiers || []).map((t) => ({ id: t.id, min: t.min, label: t.label || null })),
             // The full floor table master for this date — lets the script emit
             // a row for every table × hour (closed/unpriced → open=0).
-            tables: tables.map((t) => ({
+            tables: dTables.map((t) => ({
                 key: t.key, gametype: t.gametype, table: t.table,
                 segment: t.segment, sub_segment: t.sub_segment,
             })),
@@ -797,17 +940,83 @@ export default function PricingDashboard() {
             // never carries a price for a table that wasn't scheduled open.
             byHour: Object.fromEntries(
                 Array.from({ length: 24 }, (_, h) => {
-                    const a = getDaypartAssignments(store, date, `h_${h}`);
-                    const open = openByHour ? (openByHour.get(h) || new Set()) : null;
+                    const a = getDaypartAssignments(storeArg, forDate, `h_${h}`);
+                    const open = dOpenByHour ? (dOpenByHour.get(h) || new Set()) : null;
                     const clean = open ? Object.fromEntries(Object.entries(a).filter(([k]) => open.has(k))) : a;
                     return [String(h), JSON.parse(JSON.stringify(clean))];
                 })
             ),
         };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [date, tables, openByHour]);
+
+    // Export dialog — pick which date(s), pick "Export as JSON" (downloads
+    // a file) or "Upload to database" (POSTs to the plan-upload service,
+    // see server/plan-upload/), then confirm once. Defaults to just the
+    // active date, JSON mode.
+    const [exportOpen, setExportOpen] = useState(false);
+    const [exportDates, setExportDates] = useState(() => new Set());
+    const [exportMode, setExportMode] = useState('json'); // 'json' | 'upload'
+    const [exportBusy, setExportBusy] = useState(false);
+    const openExportDialog = useCallback(() => {
+        setExportDates(new Set([date]));
+        setExportMode('json');
+        setExportOpen(true);
+    }, [date]);
+    // Builds every selected date's document, THEN either downloads it or
+    // uploads it, and only bumps each date's saved-version count once that
+    // action actually succeeds (a failed upload leaves nothing marked as
+    // saved, so the user can fix the problem and retry). A single date
+    // downloads/uploads its plain per-date document (unchanged, backward
+    // compatible with the restore script and with restructure_pricing.py);
+    // multiple dates are bundled into one "pricing_plan_batch" document so
+    // JSON mode only prompts for a save location once, and upload mode
+    // sends one request instead of N.
+    const doConfirmExport = useCallback(async () => {
+        if (exportDates.size === 0) return;
+        const name = window.prompt('Name this export (optional):', '') ?? '';
+        const trimmed = String(name).trim();
+        const savedAtIso = new Date().toISOString();
         const slug = trimmed ? '_' + trimmed.replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '').slice(0, 30) : '';
-        downloadJson(`pricing_${date}_v${versionNumber}${slug}.json`, payload);
-        setStore((prev) => saveVersion(prev, date, name));
-    }, [date, store, planVersions, tiers, tables, openByHour]);
+        setExportBusy(true);
+        try {
+            const sortedDates = [...exportDates].sort();
+            const payloads = [];
+            for (const d of sortedDates) {
+                const dVersions = store.plans?.[d]?.versions || [];
+                const versionNumber = (dVersions.reduce((m, v) => Math.max(m, v.versionNumber || 0), 0)) + 1;
+                payloads.push(await buildOneDatePayload(store, d, trimmed, savedAtIso, versionNumber));
+            }
+            const body = payloads.length === 1 ? payloads[0] : {
+                kind: 'pricing_plan_batch',
+                schema: 1,
+                exported_at: savedAtIso,
+                name: trimmed,
+                count: payloads.length,
+                exports: payloads,
+            };
+
+            if (exportMode === 'upload') {
+                const result = await uploadPricingPlan(body);
+                window.alert(`Uploaded ${result.rowsWritten.toLocaleString()} row${result.rowsWritten === 1 ? '' : 's'} for ${result.dates.join(', ')}.`);
+            } else if (payloads.length === 1) {
+                downloadJson(`pricing_${body.date}_v${body.version}${slug}.json`, body);
+            } else {
+                downloadJson(`pricing_batch_${payloads.length}dates_${payloads[0].date}_to_${payloads[payloads.length - 1].date}${slug}.json`, body);
+            }
+
+            // Only record the versions once the action above succeeded.
+            let nextStore = store;
+            for (const d of sortedDates) nextStore = saveVersion(nextStore, d, trimmed);
+            setStore(nextStore);
+            setExportOpen(false);
+        } catch (err) {
+            const verb = exportMode === 'upload' ? 'Upload' : 'Export';
+            window.alert(`${verb} failed: ${err?.response?.data?.error || err.message}`);
+        } finally {
+            setExportBusy(false);
+        }
+    }, [exportDates, exportMode, store, buildOneDatePayload]);
     const doRestoreVersion = useCallback((versionId) => {
         if (!versionId) return;
         setStore((prev) => restoreVersion(prev, date, versionId));
@@ -855,7 +1064,21 @@ export default function PricingDashboard() {
             const rows = await fetchPricingPlan({ date });
             const { byHour } = pricingRowsToByHour(rows, date, tiers);
             const cells = Object.values(byHour).reduce((s, b) => s + Object.keys(b.assignments).length, 0);
-            if (cells === 0) { window.alert('No pricing plan found in the database for this date.'); return; }
+            if (cells === 0) {
+                // Say WHICH empty it is — no rows for the date, or rows whose
+                // table_minimum is empty — so the fix is obvious.
+                if (!rows.length) {
+                    const avail = rows.availableDates;
+                    window.alert(`No pricing rows in the database for ${date}.` + (avail && avail.length
+                        ? `\n\nDates the database does have: ${avail.slice(-8).join(', ')}`
+                        : '\n\nThe database returned no rows at all.'));
+                } else {
+                    const priced = rows.filter((r) => Number(r.table_minimum) > 0).length;
+                    window.alert(`Found ${rows.length} rows for ${date}, but ${priced ? 'none could be matched to a tier' : 'every table_minimum is empty or 0'}.` +
+                        (priced ? '' : '\n\nThe plan was uploaded without prices — check the uploaded file had tiers and open tables.'));
+                }
+                return;
+            }
             if (!window.confirm(`Load v0 from the database for ${date}\n${Object.keys(byHour).length} hour buckets · ${cells} priced cells.\n\nThis replaces that date's current plan.`)) return;
             setStore((prev) => {
                 let s = prev;
@@ -884,6 +1107,10 @@ export default function PricingDashboard() {
         }
         return out;
     }, [date]);
+    useEffect(() => {
+        if (autoMode && apTab === 'result' && ap.draft && ap.draft.reports[date]) ap.measureDate(date);
+    }, [autoMode, apTab, ap.draft, date, ap.measureDate]); // eslint-disable-line react-hooks/exhaustive-deps
+
     const doApplyToDates = useCallback(() => {
         if (transferDates.size === 0) return;
         setStore((prev) => applyPlanToDates(prev, date, [...transferDates]));
@@ -916,7 +1143,7 @@ export default function PricingDashboard() {
                     {/* View mode — Planning (price the floor) vs Comparison
                         (two plans side by side). */}
                     <Box sx={{ display: 'flex', alignItems: 'center', height: TOOLBAR_H, p: '3px', gap: '2px', borderRadius: 2, bgcolor: 'rgba(255,255,255,0.045)', border: '1px solid rgba(122,200,220,0.18)' }}>
-                        {[{ v: 'planning', label: 'Planning' }, { v: 'comparison', label: 'Comparison' }].map((o) => {
+                        {[{ v: 'planning', label: 'Planning' }, { v: 'autoplan', label: 'Auto-plan' }, { v: 'comparison', label: 'Comparison' }].map((o) => {
                             const active = viewMode === o.v;
                             return (
                                 <Box key={o.v} onClick={() => setViewMode(o.v)} sx={{
@@ -940,6 +1167,20 @@ export default function PricingDashboard() {
                     </Tooltip>
                     <Tooltip title="Apply this date's whole plan to other days">
                         <span><GhostButton onClick={() => setTransferOpen(true)} icon={<CalendarMonthIcon sx={{ fontSize: 16 }} />}>Apply to dates…</GhostButton></span>
+                    </Tooltip>
+
+                    <ToolLabel>Edit</ToolLabel>
+                    <Tooltip title="Block: a paint prices every hour of the core-hour block (e.g. 07–10), like Auto-plan. This hour: only the selected hour.">
+                        <Box role="group" aria-label="Paint scope" sx={{ display: 'flex', alignItems: 'center', height: TOOLBAR_H, p: '3px', gap: '2px', borderRadius: 2, bgcolor: 'rgba(255,255,255,0.045)', border: '1px solid rgba(122,200,220,0.18)' }}>
+                            {[[true, `Block ${blockHours(coreFor(scrubHour)).length > 1 ? `${String(blockHours(coreFor(scrubHour))[0]).padStart(2, '0')}–${String(blockHours(coreFor(scrubHour)).slice(-1)[0]).padStart(2, '0')}` : ''}`], [false, 'This hour']].map(([v, label]) => (
+                                <Box key={String(v)} component="button" type="button" aria-pressed={blockEdit === v} onClick={() => setBlockEdit(v)} sx={{
+                                    all: 'unset', cursor: 'pointer', px: 1.4, height: '100%', display: 'flex', alignItems: 'center', borderRadius: 1.4,
+                                    fontSize: TB.control, fontWeight: 700, whiteSpace: 'nowrap',
+                                    bgcolor: blockEdit === v ? '#7adfff' : 'transparent', color: blockEdit === v ? '#06182a' : 'rgba(255,255,255,0.6)',
+                                    '&:focus-visible': { outline: '2px solid #7adfff', outlineOffset: 2 },
+                                }}>{label}</Box>
+                            ))}
+                        </Box>
                     </Tooltip>
 
                     <ToolDivider />
@@ -1092,6 +1333,23 @@ export default function PricingDashboard() {
                             )}
                         </Stack>
                     </Field>
+
+                    {/* Fixed-price rectangle outline — on by default; toggle
+                        off if it clutters the floor while you're just reading
+                        prices, without touching which tables are locked. */}
+                    <Field label="Fixed Outline">
+                        <Box onClick={() => setShowFixedOutline((v) => !v)}
+                            sx={{
+                                height: TOOLBAR_H, display: 'flex', alignItems: 'center', px: 1.4, borderRadius: 2, cursor: 'pointer', userSelect: 'none',
+                                fontSize: TB.control, fontWeight: 800, whiteSpace: 'nowrap',
+                                color: showFixedOutline ? '#06182a' : 'rgba(255,255,255,0.65)',
+                                bgcolor: showFixedOutline ? '#ffd479' : 'rgba(255,255,255,0.045)',
+                                border: `1px solid ${showFixedOutline ? '#ffd479' : 'rgba(122,200,220,0.22)'}`,
+                                '&:hover': { borderColor: 'rgba(122,200,220,0.45)' },
+                            }}>
+                            {showFixedOutline ? 'On' : 'Off'}
+                        </Box>
+                    </Field>
                     </>)}
 
                     <Box sx={{ flex: 1 }} />
@@ -1150,22 +1408,40 @@ export default function PricingDashboard() {
                                     Import
                                 </Button>
                             </Tooltip>
-                            <Button
-                                onClick={doSaveVersion}
-                                startIcon={<SaveIcon sx={{ fontSize: 18 }} />}
-                                size="small"
-                                sx={{
-                                    height: TOOLBAR_H, textTransform: 'none', fontSize: TB.save, fontWeight: 800,
-                                    color: '#06182a', bgcolor: '#7adfff', borderRadius: 2, px: 1.8,
-                                    boxShadow: '0 2px 10px rgba(122,223,255,0.3)',
-                                    '&:hover': { bgcolor: '#a0e8ff' },
-                                }}
-                            >
-                                Save version
-                            </Button>
+                            <Tooltip title="Save version(s) — export as JSON, or upload straight to the database">
+                                <Button
+                                    onClick={openExportDialog}
+                                    startIcon={<SaveIcon sx={{ fontSize: 18 }} />}
+                                    size="small"
+                                    sx={{
+                                        height: TOOLBAR_H, textTransform: 'none', fontSize: TB.save, fontWeight: 800,
+                                        color: '#06182a', bgcolor: '#7adfff', borderRadius: 2, px: 1.8,
+                                        boxShadow: '0 2px 10px rgba(122,223,255,0.3)',
+                                        '&:hover': { bgcolor: '#a0e8ff' },
+                                    }}
+                                >
+                                    Save
+                                </Button>
+                            </Tooltip>
                         </Stack>
                     )}
                 </Stack>
+                {autoMode && (
+                    <Box sx={{ mt: 1.2, pt: 1.2, borderTop: '1px solid rgba(122,200,220,0.14)' }}>
+                        <AutoPlanBar
+                            period={ap.period} onPeriod={ap.setPeriod}
+                            cfg={ap.cfg} onCfg={ap.setCfg} dateCounts={ap.dateCounts}
+                            keepPins={ap.keepPins} onKeepPins={ap.setKeepPins}
+                            stayClose={ap.stayClose} onStayClose={ap.setStayClose}
+                            onSolve={() => { ap.solve(); if (!ap.dates.includes(date)) setDate(ap.dates[0]); setApTab('result'); }}
+                            solving={ap.solving} progress={ap.progress} ready={ap.ready} stale={ap.stale}
+                            draftDates={ap.draft ? Object.keys(ap.draft.byDate).length : 0}
+                            onApply={() => setApplyOpen(true)} onDiscard={ap.discard}
+                            note={ap.loading ? `Loading ${ap.cfg.criteria.histWeeks} weeks of hourly history…`
+                                : ap.missingSchedule ? `${ap.missingSchedule} of ${ap.dates.length} dates have no schedule yet — every table is treated as open on those dates.` : ''}
+                        />
+                    </Box>
+                )}
             </Box>
 
             {/* Copy-to-hours dialog — pick target hours; only OPEN tables at
@@ -1250,6 +1526,127 @@ export default function PricingDashboard() {
                 </DialogActions>
             </Dialog>
 
+            {/* Export dialog — multi-select which date(s) to save a version
+                for, choose JSON download vs direct database upload, confirm
+                in one shot. Only offers dates that already have a plan
+                (empty dates have nothing worth exporting); the active date
+                is pre-checked. */}
+            <Dialog open={exportOpen} onClose={() => !exportBusy && setExportOpen(false)}
+                PaperProps={{ sx: { bgcolor: 'rgba(18,22,34,0.98)', color: '#fff', border: '1px solid rgba(122,200,220,0.25)', minWidth: 420 } }}>
+                <DialogTitle sx={{ pb: 0.5 }}>
+                    <Stack direction="row" alignItems="center" spacing={1}>
+                        <SaveIcon sx={{ fontSize: 20, color: '#7adfff' }} />
+                        <Typography sx={{ fontSize: PF.transfer.title, fontWeight: 800 }}>Export pricing plan</Typography>
+                    </Stack>
+                    <Typography sx={{ fontSize: PF.transfer.subtitle, color: 'rgba(255,255,255,0.55)', mt: 0.5 }}>
+                        Pick which date(s) to save a version for, and where it goes.
+                    </Typography>
+                </DialogTitle>
+                <DialogContent>
+                    {/* JSON download vs direct-to-database upload. */}
+                    <Stack direction="row" spacing={0} sx={{ mb: 1.4, borderRadius: 1.4, overflow: 'hidden', border: '1px solid rgba(122,200,220,0.28)' }}>
+                        {[
+                            { v: 'json', label: 'Export as JSON', color: '#7adfff' },
+                            { v: 'upload', label: 'Upload to database', color: '#3fae6a' },
+                        ].map((o) => {
+                            const active = exportMode === o.v;
+                            return (
+                                <Box key={o.v} onClick={() => !exportBusy && setExportMode(o.v)}
+                                    sx={{
+                                        flex: 1, py: 0.9, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                        fontSize: PF.transfer.row, fontWeight: 800, cursor: exportBusy ? 'default' : 'pointer', userSelect: 'none',
+                                        color: active ? '#06182a' : 'rgba(255,255,255,0.7)',
+                                        bgcolor: active ? o.color : 'rgba(255,255,255,0.04)',
+                                        transition: 'background-color 140ms, color 140ms',
+                                    }}>
+                                    {o.label}
+                                </Box>
+                            );
+                        })}
+                    </Stack>
+                    {exportMode === 'upload' && (
+                        <Typography sx={{ fontSize: PF.transfer.none, color: 'rgba(255,255,255,0.5)', mb: 1, fontStyle: 'italic' }}>
+                            Replaces whatever is currently stored for the selected date(s) in the database.
+                        </Typography>
+                    )}
+                    <Box sx={{ height: 320, overflowY: 'auto', border: '1px solid rgba(122,200,220,0.2)', borderRadius: 1.5, bgcolor: 'rgba(255,255,255,0.02)', py: 0.4 }}>
+                        {availableDates.length === 0 ? (
+                            <Typography sx={{ color: 'rgba(255,255,255,0.35)', fontSize: PF.transfer.none, fontStyle: 'italic', textAlign: 'center', mt: 3 }}>
+                                No dates with a plan yet.
+                            </Typography>
+                        ) : availableDates.map((d) => {
+                            const on = exportDates.has(d);
+                            return (
+                                <Stack key={d} direction="row" alignItems="center" spacing={0.5}
+                                    onClick={() => setExportDates((prev) => { const n = new Set(prev); n.has(d) ? n.delete(d) : n.add(d); return n; })}
+                                    sx={{ cursor: 'pointer', px: 0.8, py: 0.2, mx: 0.5, borderRadius: 1, '&:hover': { bgcolor: 'rgba(122,223,255,0.06)' } }}>
+                                    <Checkbox checked={on} size="small" sx={{ p: 0.4, color: 'rgba(255,255,255,0.3)', '&.Mui-checked': { color: '#7adfff' } }} />
+                                    <Typography sx={{ fontSize: PF.transfer.row, fontWeight: on ? 800 : 500, color: on ? '#dff5ff' : 'rgba(255,255,255,0.85)', fontVariantNumeric: 'tabular-nums' }}>
+                                        {prettyDate(d)}
+                                    </Typography>
+                                    {d === date && (
+                                        <Typography sx={{ fontSize: PF.transfer.paneCount, color: 'rgba(122,223,255,0.7)', ml: 'auto', pr: 1 }}>current</Typography>
+                                    )}
+                                </Stack>
+                            );
+                        })}
+                    </Box>
+                </DialogContent>
+                <DialogActions sx={{ px: 3, pb: 2 }}>
+                    <Button onClick={() => setExportDates(new Set(availableDates))} disabled={availableDates.length === 0 || exportBusy}
+                        sx={{ textTransform: 'none', color: 'rgba(255,255,255,0.6)', fontWeight: 700 }}>Select all</Button>
+                    <Button onClick={() => setExportDates(new Set())} disabled={exportBusy}
+                        sx={{ textTransform: 'none', color: 'rgba(255,255,255,0.6)', fontWeight: 700 }}>Clear</Button>
+                    <Box sx={{ flex: 1 }} />
+                    <Button onClick={() => setExportOpen(false)} disabled={exportBusy}
+                        sx={{ textTransform: 'none', color: 'rgba(255,255,255,0.7)', fontWeight: 700 }}>Cancel</Button>
+                    <Button onClick={doConfirmExport} disabled={exportDates.size === 0 || exportBusy}
+                        sx={{
+                            textTransform: 'none', fontWeight: 800, color: '#0a1a2c', px: 2,
+                            bgcolor: exportMode === 'upload' ? '#3fae6a' : '#7adfff',
+                            '&:hover': { bgcolor: exportMode === 'upload' ? '#56c680' : '#a0e8ff' },
+                            '&.Mui-disabled': { bgcolor: 'rgba(255,255,255,0.12)', color: 'rgba(255,255,255,0.4)' },
+                        }}>
+                        {exportBusy
+                            ? (exportMode === 'upload' ? 'Uploading…' : 'Exporting…')
+                            : (exportMode === 'upload' ? `Upload ${exportDates.size} to DB` : `Export ${exportDates.size}`)}
+                    </Button>
+                </DialogActions>
+            </Dialog>
+
+            {/* Auto-plan apply — confirm, then write every date (a version first). */}
+            <Dialog open={applyOpen} onClose={() => setApplyOpen(false)} aria-labelledby="ap-apply-title"
+                slotProps={{ paper: { sx: { bgcolor: 'rgba(18,22,34,0.98)', color: '#dff5ff', border: '1px solid rgba(122,200,220,0.3)', backgroundImage: 'none' } } }}>
+                <DialogTitle id="ap-apply-title" sx={{ fontWeight: 800 }}>Apply Auto-plan to {ap.draft ? Object.keys(ap.draft.byDate).length : 0} dates?</DialogTitle>
+                <DialogContent>
+                    <Typography sx={{ fontSize: 14, color: 'rgba(223,245,255,0.8)', mb: 1 }}>
+                        Writes prices for every hour of {ap.period.from} → {ap.period.to}, replacing what those dates have now. Pinned tables keep their price.
+                    </Typography>
+                    <Typography sx={{ fontSize: 14, color: 'rgba(223,245,255,0.8)' }}>
+                        A version called “Before Auto-plan” is saved on each date first — restore it from Load plan to undo.
+                    </Typography>
+                </DialogContent>
+                <DialogActions sx={{ px: 3, pb: 2 }}>
+                    <Button onClick={() => setApplyOpen(false)} sx={{ textTransform: 'none', fontWeight: 700, color: '#dff5ff' }}>Cancel</Button>
+                    <Button onClick={() => {
+                        const first = ap.dates[0];
+                        const n = ap.apply();
+                        setApplyOpen(false);
+                        setViewMode('planning');
+                        if (first) setDate(first);
+                        setApToast(`Applied Auto-plan to ${n} dates · a “Before Auto-plan” version was saved on each`);
+                        setTimeout(() => setApToast(''), 4000);
+                    }} sx={{ textTransform: 'none', fontWeight: 800, color: '#0a1a2c', bgcolor: '#7adfff', px: 2, '&:hover': { bgcolor: '#a0e8ff' } }}>
+                        Apply {ap.draft ? Object.keys(ap.draft.byDate).length : 0} dates
+                    </Button>
+                </DialogActions>
+            </Dialog>
+            {apToast ? (
+                <Box role="status" aria-live="polite" sx={{ position: 'fixed', left: '50%', bottom: 24, transform: 'translateX(-50%)', zIndex: 1400, px: 2, py: 1.2, borderRadius: 2, bgcolor: 'rgba(18,22,34,0.98)', border: '1px solid #7adfff', color: '#dff5ff', fontWeight: 700, boxShadow: '0 10px 30px rgba(0,0,0,0.5)' }}>
+                    {apToast}
+                </Box>
+            ) : null}
+
             {/* Comparison mode — two plans side by side + a comparison table. */}
             {viewMode === 'comparison' && (
                 <PricingComparison
@@ -1264,7 +1661,7 @@ export default function PricingDashboard() {
 
             {/* Main grid — floor map + right column. Scatter ~82% width; the
                 rest goes to the right column. */}
-            {viewMode === 'planning' && (
+            {(viewMode === 'planning' || autoMode) && (
             <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', lg: `${FLOOR_WIDTH_FR}fr ${SUMMARY_WIDTH_FR}fr` }, gap: 1.5, mb: 1.5 }}>
                 {/* Left column: timeline strip (above) + scatter map. The
                     timeline lives in the same column so its width strictly
@@ -1272,6 +1669,8 @@ export default function PricingDashboard() {
                 <Box>
                     <Box sx={{ mb: 1 }}>
                         <TimelineControl
+                            coreHours={CORE_HOURS}
+                            coreOf={coreFor}
                             currentHour={scrubHour}
                             onCurrentHour={onScrubHour}
                             playing={playing}
@@ -1290,12 +1689,15 @@ export default function PricingDashboard() {
                         priceByKey={priceByKey}
                         closedKeys={closedKeys}
                         fixedKeys={fixedKeys}
+                        showFixedOutline={showFixedOutline}
                         selectedKeys={selectedKeys}
-                        activeBrushShiftId={activeTierId}
+                        activeBrushShiftId={autoMode ? null : activeTierId}
                         onSelectionChange={onSelectionChange}
-                        onAssign={assignOne}
+                        onAssign={autoMode ? undefined : assignOne}
+                        pinnedKeys={pinnedKeys}
+                        manualKeys={autoMode ? manualKeys : undefined}
                         flexEnabled={flexEnabled}
-                        changeHighlights={changeHighlights}
+                        changeHighlights={autoMode ? autoChanges : changeHighlights}
                         dimmedKeys={dimmedKeys}
                         vmSelected={vmSelected}
                         onVmSelected={setVmSelected}
@@ -1309,7 +1711,11 @@ export default function PricingDashboard() {
                         (rectangle / polygon / click). Set a fixed minimum or a
                         Base→Ceiling range; either prices the selection and
                         dismisses (clearing the box). */}
+                    {!autoMode && (
                     <TierSelectionBar
+                        onPin={() => setPinForSelection(true)}
+                        onUnpin={() => setPinForSelection(false)}
+                        pinnedCount={[...selectedKeys].filter((k) => pinnedKeys.has(k)).length}
                         selectedKeys={selectedKeys}
                         assignments={assignments}
                         tiers={tiers}
@@ -1328,10 +1734,34 @@ export default function PricingDashboard() {
                         onHistDowsChange={setHistDows}
                         histHours={histHours}
                         onHistHoursChange={setHistHours}
+                        histAllHours={histAllHours}
+                        onHistAllHoursChange={setHistAllHours}
                         histLoading={histLoading}
                         flexEnabled={flexEnabled}
                         boundaryPresets={boundaryPresets}
                     />
+                    )}
+                    {autoMode && (
+                        <TableRulePanel
+                            keys={[...selectedKeys]}
+                            labelOf={(k) => k.replace('|', '')}
+                            manualCount={[...selectedKeys].filter((k) => manualKeys.has(k)).length}
+                            blockText={(() => { const hs = blockHours(coreFor(scrubHour)); return hs.length > 1 ? `${String(hs[0]).padStart(2, '0')}–${String(hs[hs.length - 1]).padStart(2, '0')}` : `${String(hs[0]).padStart(2, '0')}`; })()}
+                            dateText={`${(DAY_TYPES.find((d) => d.id === ap.dtOf(date)) || {}).label || ''} ${date}`}
+                            tiers={ap.tiersAsc} coreHours={CORE_HOURS} currentCore={coreFor(scrubHour)}
+                            currentTier={(() => { const ids = new Set([...selectedKeys].map((k) => (readPrice((assignments || {})[k]) || {}).base)); return ids.size === 1 ? [...ids][0] || null : null; })()}
+                            busy={ap.solving}
+                            onApplyRule={(rule, summary) => {
+                                ap.addTableRule(rule, [...selectedKeys]);
+                                setSelectedKeys(new Set());
+                                setApToast(`Rule added: ${summary}${ap.draft ? ' Solving again…' : ' Solve to see it.'}`);
+                                setTimeout(() => setApToast(''), 4500);
+                            }}
+                            onSetManual={(tierId) => { ap.setManual(date, coreFor(scrubHour), [...selectedKeys], tierId); setSelectedKeys(new Set()); }}
+                            onClearManual={() => ap.setManual(date, coreFor(scrubHour), [...selectedKeys], null)}
+                            onDeselect={() => setSelectedKeys(new Set())}
+                        />
+                    )}
                     </Box>{/* scatter box */}
                 </Box>{/* left column */}
 
@@ -1344,19 +1774,27 @@ export default function PricingDashboard() {
                   }}>
                     {/* Right-column tabs — full-width, equal segments. */}
                     <Stack direction="row" sx={{ flexShrink: 0, border: '1px solid rgba(122,200,220,0.25)', borderRadius: 1.2, overflow: 'hidden' }}>
-                        {[
+                        {(autoMode ? [
+                            { v: 'targets', label: 'Targets', icon: <GridViewIcon sx={{ fontSize: 19 }} /> },
+                            { v: 'rules', label: 'Rules', icon: <SettingsIcon sx={{ fontSize: 19 }} /> },
+                            { v: 'criteria', label: 'Criteria', icon: <TuneIcon sx={{ fontSize: 19 }} /> },
+                            { v: 'result', label: `Result${ap.totals.problems ? ` · ${ap.totals.problems}` : ''}`, icon: <SummarizeIcon sx={{ fontSize: 19 }} /> },
+                        ] : [
                             { v: 'palette', label: 'Minimums', icon: <GridViewIcon sx={{ fontSize: 19 }} /> },
                             { v: 'summary', label: 'Summary', icon: <SummarizeIcon sx={{ fontSize: 19 }} /> },
                             { v: 'library', label: 'Settings', icon: <SettingsIcon sx={{ fontSize: 19 }} /> },
-                        ].map((opt) => (
-                            <Box key={opt.v} onClick={() => setRightView(opt.v)}
+                        ]).map((opt) => (
+                            <Box key={opt.v} role="tab" tabIndex={0} aria-selected={(autoMode ? apTab : rightView) === opt.v}
+                                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); (autoMode ? setApTab : setRightView)(opt.v); } }}
+                                onClick={() => (autoMode ? setApTab : setRightView)(opt.v)}
                                 sx={{
                                     flex: 1, minWidth: 0, gap: 0.6, py: 1, cursor: 'pointer', fontSize: PF.tabs.label, fontWeight: 700, lineHeight: 1,
                                     display: 'flex', alignItems: 'center', justifyContent: 'center', whiteSpace: 'nowrap',
                                     borderRight: '1px solid rgba(122,200,220,0.18)', '&:last-of-type': { borderRight: 'none' },
-                                    bgcolor: rightView === opt.v ? '#7adfff' : 'transparent',
-                                    color: rightView === opt.v ? '#0a1a2c' : 'rgba(255,255,255,0.6)',
-                                    '&:hover': rightView !== opt.v ? { bgcolor: 'rgba(122,223,255,0.08)' } : undefined,
+                                    bgcolor: (autoMode ? apTab : rightView) === opt.v ? '#7adfff' : 'transparent',
+                                    color: (autoMode ? apTab : rightView) === opt.v ? '#0a1a2c' : 'rgba(255,255,255,0.6)',
+                                    '&:hover': (autoMode ? apTab : rightView) !== opt.v ? { bgcolor: 'rgba(122,223,255,0.08)' } : undefined,
+                                    '&:focus-visible': { outline: '2px solid #7adfff', outlineOffset: -2 },
                                 }}>
                                 {opt.icon}{opt.label}
                             </Box>
@@ -1371,7 +1809,69 @@ export default function PricingDashboard() {
                         '&::-webkit-scrollbar': { display: 'none' },
                     }}>
 
-                    {rightView === 'summary' && (
+                    {autoMode && apTab === 'targets' && (
+                        <TargetsPanel
+                            cfg={ap.cfg} onCfg={ap.setCfg}
+                            scope={apScope.startsWith('d:') && !ap.dates.includes(apScope.slice(2)) ? ap.dtOf(apScope.slice(2)) : apScope}
+                            onScope={(sc) => { setApScope(sc); if (sc.startsWith('d:')) setDate(sc.slice(2)); }}
+                            dates={ap.dates} dtOf={ap.dtOf}
+                            sub={apSub && ap.ladders[apSub] ? apSub : (sortSubSegments(Object.keys(ap.ladders))[0] || '')} onSub={setApSub}
+                            subs={sortSubSegments(Object.keys(ap.ladders))}
+                            ladders={ap.ladders} historyLadders={ap.historyLadders} tiersAsc={ap.tiersAsc} tierIndex={ap.tierIndex} tierById={ap.tierById}
+                            mixFor={ap.mixFor} openCountFor={ap.openCountFor} fitMix={ap.fitMix} onSeed={ap.seedDayType} priceSourceOf={ap.priceSourceOf}
+                        />
+                    )}
+                    {autoMode && apTab === 'rules' && (
+                        <RulesPanel
+                            cfg={ap.cfg} onCfg={ap.setCfg} tiersAsc={ap.tiersAsc}
+                            options={{
+                                sub: sortSubSegments(Object.keys(ap.ladders)),
+                                gt: [...new Set(ap.tables.map((t) => t.gametype))].sort(),
+                                zone: [...new Set(ap.tables.map((t) => t.zone))].sort(),
+                                table: ap.tables.map((t) => t.key).sort(),
+                            }}
+                            costs={ap.measure.key && ap.measure.key.endsWith(`|${date}`) ? ap.measure.costs : null}
+                            usedTiers={ap.tiersAsc.map((t) => t.id).filter((id) => Object.values(ap.ladders).some((l) => l.includes(id)))}
+                            dayLabel={(d) => (DAY_TYPES.find((x) => x.id === ap.dtOf(d)) || {}).label || ''}
+                            onRemoveManual={(d, c, k) => ap.setManual(d, c, [k], null)}
+                            onClearManualDate={ap.clearManual}
+                        />
+                    )}
+                    {autoMode && apTab === 'criteria' && (
+                        <CriteriaPanel
+                            cfg={ap.cfg} onCfg={ap.setCfg} onCoreHours={ap.setCoreHours}
+                            ladders={ap.ladders} tierById={ap.tierById}
+                            histWindow={ap.history ? ap.history.window : null} rankWindow={ap.history ? ap.history.rankWindow : null}
+                            refDate={ap.refDate} refLabel={ap.refDate ? `${DAY_TYPES.find((d) => d.id === ap.dtOf(ap.refDate))?.label || ''} ${ap.refDate}` : ''}
+                            breakdown={ap.rankBreakdown} mixFor={ap.mixFor} subs={sortSubSegments(ap.subs)}
+                            levels={Math.max(2, ...Object.values(ap.ladders).map((l) => l.length))}
+                            stale={ap.stale} hasDraft={!!ap.draft} solving={ap.solving}
+                            onSolve={() => { ap.solve(); if (!ap.dates.includes(date)) setDate(ap.dates[0]); }}
+                        />
+                    )}
+                    {autoMode && apTab === 'result' && (
+                        <ResultPanel
+                            hasDraft={!!ap.draft} onSolve={() => { ap.solve(); if (!ap.dates.includes(date)) setDate(ap.dates[0]); }}
+                            dates={ap.dates} date={ap.draft && ap.draft.reports[date] ? date : (ap.dates[0] || date)} onDate={setDate}
+                            dateStats={ap.dateStats} dayTypeOfDate={ap.dtOf} totals={ap.totals}
+                            report={ap.draft ? ap.draft.reports[date] || ap.draft.reports[ap.dates[0]] : null}
+                            core={coreFor(scrubHour)} onCore={onScrubHour}
+                            tierById={ap.tierById} tierIndex={ap.tierIndex} tableByKey={ap.tableByKey}
+                            rankPct={(key, up) => { const top = ap.rankPctOf(date, key, coreFor(scrubHour)); return up ? top : Math.max(1, 101 - top); }}
+                            pins={ap.draft && ap.draft.pins[date] ? ap.draft.pins[date][coreFor(scrubHour)] : null}
+                            onKeepPrevious={(key, tier) => ap.keepAndResolve(date, coreFor(scrubHour), key, tier)}
+                            ruleChecks={ap.ruleChecks(date)} costsBusy={ap.measure.busy}
+                            baseline={ap.measure.key && ap.measure.key.endsWith(`|${date}`) ? ap.measure.baseline : null}
+                            ruleText={(r) => ruleSummary(r, ap.tierById)}
+                            closed={ap.closedCheck(ap.draft && ap.draft.reports[date] ? date : (ap.dates[0] || date))}
+                            alignDiffs={ap.draft ? (ap.draft.alignDiffs || {})[ap.draft.reports[date] ? date : ap.dates[0]] || 0 : 0}
+                            anchor={ap.draft ? (ap.draft.anchors || {})[ap.draft.reports[date] ? date : ap.dates[0]] ?? 21 : 21}
+                            refText={ap.draft && ap.draft.refDate ? `${(DAY_TYPES.find((d) => d.id === ap.dtOf(ap.draft.refDate)) || {}).label || ''} ${ap.draft.refDate.slice(5)}` : ''}
+                            onDownload={() => downloadText(`pricing-change-sheet_${ap.period.from}_${ap.period.to}.csv`, ap.changeSheet())}
+                        />
+                    )}
+
+                    {!autoMode && rightView === 'summary' && (
                         <PricingSummary
                             tiers={tiers}
                             store={store} date={date}
@@ -1384,14 +1884,14 @@ export default function PricingDashboard() {
                         />
                     )}
 
-                    {rightView === 'library' && (
+                    {!autoMode && rightView === 'library' && (
                         <>
                             <DaypartLibrary dayparts={dayparts} onChange={onDaypartsChange} />
                             <TierLibrary tiers={tiers} onChange={onTiersChange} />
                         </>
                     )}
 
-                    {rightView === 'palette' && (<>
+                    {!autoMode && rightView === 'palette' && (<>
                     <TierPalette
                         tiers={tiers}
                         activeTierId={activeTierId}
@@ -1438,9 +1938,13 @@ export default function PricingDashboard() {
             )}
 
             {/* Hourly minimum-mix charts by segment (below the floor map). */}
-            {viewMode === 'planning' && (
+            {autoMode && ap.draft && ap.draft.reports[date] ? (
+                <ChangeStrip report={ap.draft.reports[date]} core={coreFor(scrubHour)} onCore={onScrubHour}
+                    date={date} dayLabel={(DAY_TYPES.find((d) => d.id === ap.dtOf(date)) || {}).label} />
+            ) : null}
+            {(viewMode === 'planning' || autoMode) && (
                 <PricingHourlyCharts
-                    store={store}
+                    store={viewStore}
                     date={date}
                     dayparts={dayparts}
                     hourlyMode={appMode === 'hourly'}

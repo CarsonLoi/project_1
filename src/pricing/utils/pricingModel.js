@@ -52,3 +52,7 @@ export function orderTriple(tierMap, minId, baseId, maxId) {
     if (val(bs) > val(mx)) bs = mx;
     return { min: mn, base: bs, max: mx };
 }
+
+// Auto-plan markers — both optional, both ignored by readPrice.
+export const isPinned = (v) => !!(v && typeof v === 'object' && v.pin);
+export const isAuto = (v) => !!(v && typeof v === 'object' && v.src === 'auto');

@@ -58,6 +58,8 @@ export default function PricingFloorMap({
     priceByKey,
     closedKeys,
     fixedKeys,
+    showFixedOutline = true, // false → keep fixed-price data/tooltips as-is,
+                              // just hide the rectangle overlay + legend swatch
     selectedKeys,
     activeBrushShiftId,
     onSelectionChange,
@@ -65,6 +67,8 @@ export default function PricingFloorMap({
     readOnly = false,
     flexEnabled = true,
     changeHighlights,   // Map<tableKey, 'up'|'down'> — price-change outlines
+    pinnedKeys,         // Set<tableKey> — pinned (kept by Auto-plan): dashed gold outline
+    manualKeys,         // Set<tableKey> — manual price (an Auto-plan rule) this block: solid gold outline
     // Colors for the change-highlight rectangle. Defaults match the planning
     // dashboard convention (red = up, green = down). Comparison mode passes
     // an inverted palette so green = higher, red = lower.
@@ -78,6 +82,9 @@ export default function PricingFloorMap({
     onVmSelected,       // (selected) => void
     date,               // overlay date picker (top-right of the scatter)
     onDateChange,       // (iso) => void
+    dateLocked = false, // true → show a read-only date pill instead of the
+                         // editable input (same-date comparison mode: Date B
+                         // always mirrors Date A, so it isn't independently pickable)
     scheduleLoaded = false,
     scheduleLoading = false,
     mode = 'planning',  // 'planning' | 'comparison' — picks the axis-bounds set
@@ -189,7 +196,7 @@ export default function PricingFloorMap({
     // overlapping rectangle borders. Drawn data-space via a custom series.
     const fixedGeom = useMemo(() => {
         const fixedSet = fixedKeys || null;
-        if (!fixedSet || fixedSet.size === 0) return { cells: [], halfPx: 0 };
+        if (!showFixedOutline || !fixedSet || fixedSet.size === 0) return { cells: [], halfPx: 0 };
         const fix = (tables || []).filter((t) => fixedSet.has(t.key));
         if (!fix.length) return { cells: [], halfPx: 0 };
 
@@ -238,7 +245,7 @@ export default function PricingFloorMap({
             });
         }
         return { cells, halfPx };
-    }, [tables, fixedKeys, SZ]);
+    }, [tables, fixedKeys, showFixedOutline, SZ]);
 
     // Change-highlight outlines — a per-table red (price higher at the compared
     // hour) / green (lower) rounded rectangle around each changed table.
@@ -256,6 +263,22 @@ export default function PricingFloorMap({
         }
         return out;
     }, [changeHighlights, tables, SZ]);
+
+    // Pinned tables — a dashed gold ring a little outside the change outline,
+    // so a pinned table that also changed shows both.
+    // Manual prices get a solid ring instead.
+    const pinGeom = useMemo(() => {
+        const hasPin = pinnedKeys && pinnedKeys.size, hasMan = manualKeys && manualKeys.size;
+        if (!hasPin && !hasMan) return [];
+        const out = [];
+        for (const t of (tables || [])) {
+            const manual = !!(hasMan && manualKeys.has(t.key));
+            if (!manual && !(hasPin && pinnedKeys.has(t.key))) continue;
+            const svgDef = gametype_svg_path[t.gametype];
+            out.push({ cx: t.x, cy: t.y, manual, w: ((svgDef ? svgDef.size_X * SZ : 18) * 1.75) / 2, hh: ((svgDef ? svgDef.size_Y * SZ : 18) * 1.75) / 2 });
+        }
+        return out;
+    }, [pinnedKeys, manualKeys, tables, SZ]);
 
     // Init once; listeners read handlersRef so they never go stale.
     useEffect(() => {
@@ -453,10 +476,27 @@ export default function PricingFloorMap({
                         return { type: 'group', children };
                     },
                 }] : []),
+                ...(pinGeom.length ? [{
+                    type: 'custom', silent: true, z: 7, animation: false, tooltip: { show: false },
+                    data: [[(SCATTER_X_MIN + SCATTER_X_MAX) / 2, (SCATTER_Y_MIN + SCATTER_Y_MAX) / 2]],
+                    renderItem: (params, api) => ({
+                        type: 'group',
+                        children: pinGeom.map((c) => {
+                            const p = api.coord([c.cx, c.cy]);
+                            return {
+                                type: 'rect', silent: true,
+                                shape: { x: p[0] - c.w, y: p[1] - c.hh, width: 2 * c.w, height: 2 * c.hh, r: 4 },
+                                style: c.manual
+                                    ? { fill: 'transparent', stroke: '#ffcd78', lineWidth: 2.5 }
+                                    : { fill: 'transparent', stroke: '#ffcd78', lineWidth: 2, lineDash: [4, 3] },
+                            };
+                        }),
+                    }),
+                }] : []),
             ],
         });
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [seriesData, fixedGeom, changeGeom, sortedTiers, vmSelected, mode]);
+    }, [seriesData, fixedGeom, changeGeom, pinGeom, sortedTiers, vmSelected, mode]);
 
     useEffect(() => {
         const inst = instRef.current;
@@ -484,13 +524,25 @@ export default function PricingFloorMap({
             {onDateChange && (
                 <Box sx={{ position: 'absolute', top: 10, right: 10, zIndex: 6, display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 0.5 }}>
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.7 }}>
-                        <Box component="input" type="date" value={date || ''} onChange={(e) => onDateChange(e.target.value)}
-                            sx={{
-                                display: 'block', boxSizing: 'border-box', height: 34, px: 1, fontSize: FM.dateOverlay, fontWeight: 800, fontFamily: 'inherit',
-                                color: '#fff', bgcolor: 'rgba(10,22,35,0.9)', border: '1px solid rgba(122,200,220,0.4)',
-                                borderRadius: 1.2, colorScheme: 'dark', outline: 'none', backdropFilter: 'blur(6px)',
-                                '&::-webkit-calendar-picker-indicator': { filter: 'invert(1)', opacity: 0.7, cursor: 'pointer' },
-                            }} />
+                        {dateLocked ? (
+                            <Tooltip title="Locked to Date A in same-date comparison mode">
+                                <Box sx={{
+                                    display: 'flex', alignItems: 'center', height: 34, px: 1, fontSize: FM.dateOverlay, fontWeight: 800, fontFamily: 'inherit',
+                                    color: 'rgba(255,255,255,0.65)', bgcolor: 'rgba(10,22,35,0.55)', border: '1px dashed rgba(122,200,220,0.4)',
+                                    borderRadius: 1.2, backdropFilter: 'blur(6px)', whiteSpace: 'nowrap',
+                                }}>
+                                    {date || '—'} <Box component="span" sx={{ ml: 0.6, opacity: 0.65, fontSize: FM.dateOverlay - 2 }}>(= A)</Box>
+                                </Box>
+                            </Tooltip>
+                        ) : (
+                            <Box component="input" type="date" value={date || ''} onChange={(e) => onDateChange(e.target.value)}
+                                sx={{
+                                    display: 'block', boxSizing: 'border-box', height: 34, px: 1, fontSize: FM.dateOverlay, fontWeight: 800, fontFamily: 'inherit',
+                                    color: '#fff', bgcolor: 'rgba(10,22,35,0.9)', border: '1px solid rgba(122,200,220,0.4)',
+                                    borderRadius: 1.2, colorScheme: 'dark', outline: 'none', backdropFilter: 'blur(6px)',
+                                    '&::-webkit-calendar-picker-indicator': { filter: 'invert(1)', opacity: 0.7, cursor: 'pointer' },
+                                }} />
+                        )}
                         {scheduleLoading
                             ? <Box sx={{ width: 11, height: 11, borderRadius: '50%', bgcolor: 'rgba(255,255,255,0.4)', flexShrink: 0 }} />
                             : <Tooltip title={scheduleLoaded ? 'Spread schedule loaded for this date' : 'No spread schedule for this date'}>
@@ -529,11 +581,14 @@ export default function PricingFloorMap({
 
             {/* ⚙ Symbol-size adjuster — top-right of the scatter (just below
                 the date overlay). Opens a slider popover that scales every
-                table icon on this floor map. Per-mode value persists. */}
+                table icon on this floor map. Per-mode value persists.
+                When the date overlay carries an extra control (same-date
+                comparison mode slots an hour dropdown below the date picker
+                there), push this button further down so it doesn't overlap. */}
             <Tooltip title="Symbol size">
                 <Box onClick={() => setSizePopoverOpen((v) => !v)}
                     sx={{
-                        position: 'absolute', top: 52, right: 10, zIndex: 6,
+                        position: 'absolute', top: dateOverlayExtra ? 88 : 52, right: 10, zIndex: 6,
                         width: 32, height: 32, display: 'flex', alignItems: 'center', justifyContent: 'center',
                         cursor: 'pointer', borderRadius: 1.2,
                         bgcolor: sizePopoverOpen ? '#7adfff' : 'rgba(10,22,35,0.9)',
@@ -546,7 +601,7 @@ export default function PricingFloorMap({
             </Tooltip>
             {sizePopoverOpen && (
                 <Box sx={{
-                    position: 'absolute', top: 90, right: 10, zIndex: 7, width: 240,
+                    position: 'absolute', top: dateOverlayExtra ? 126 : 90, right: 10, zIndex: 7, width: 240,
                     p: 1.2, borderRadius: 1.4,
                     bgcolor: 'rgba(10,22,35,0.96)', border: '1px solid rgba(122,200,220,0.4)',
                     boxShadow: '0 8px 24px rgba(0,0,0,0.4)', backdropFilter: 'blur(8px)',
@@ -583,15 +638,27 @@ export default function PricingFloorMap({
 
             {/* Legends — closed (black) tables + fixed-price overlay. Stacked
                 at the bottom-left, directly ABOVE the Pointer toggle group. */}
-            {(closedKeys || (fixedKeys && fixedKeys.size > 0)) && (
+            {((closedKeys && closedKeys.size > 0) || (showFixedOutline && fixedKeys && fixedKeys.size > 0) || (pinnedKeys && pinnedKeys.size > 0) || (manualKeys && manualKeys.size > 0)) && (
                 <Stack spacing={0.5} sx={{ position: 'absolute', bottom: 56, left: 12, zIndex: 5, alignItems: 'flex-start' }}>
-                    {fixedKeys && fixedKeys.size > 0 && (
+                    {manualKeys && manualKeys.size > 0 && (
+                        <Stack direction="row" spacing={0.6} sx={{ alignItems: 'center', px: 1, py: 0.5, borderRadius: 1, bgcolor: 'rgba(10,22,35,0.8)', border: '1px solid rgba(255,255,255,0.08)' }}>
+                            <Box sx={{ width: 12, height: 12, borderRadius: '3px', border: '2.5px solid #ffcd78' }} />
+                            <Typography sx={{ color: 'rgba(255,255,255,0.7)', fontSize: FM.legend, fontWeight: 700 }}>manual price · rule ({manualKeys.size})</Typography>
+                        </Stack>
+                    )}
+                    {pinnedKeys && pinnedKeys.size > 0 && (
+                        <Stack direction="row" spacing={0.6} sx={{ alignItems: 'center', px: 1, py: 0.5, borderRadius: 1, bgcolor: 'rgba(10,22,35,0.8)', border: '1px solid rgba(255,255,255,0.08)' }}>
+                            <Box sx={{ width: 12, height: 12, borderRadius: '3px', border: '2px dashed #ffcd78' }} />
+                            <Typography sx={{ color: 'rgba(255,255,255,0.7)', fontSize: FM.legend, fontWeight: 700 }}>pinned · kept by Auto-plan ({pinnedKeys.size})</Typography>
+                        </Stack>
+                    )}
+                    {showFixedOutline && fixedKeys && fixedKeys.size > 0 && (
                         <Stack direction="row" alignItems="center" spacing={0.6} sx={{ px: 1, py: 0.5, borderRadius: 1, bgcolor: 'rgba(10,22,35,0.8)', border: '1px solid rgba(255,255,255,0.08)' }}>
                             <Box sx={{ width: 12, height: 12, borderRadius: '2px', border: '2px solid #ffd479', bgcolor: 'rgba(255,212,121,0.10)' }} />
                             <Typography sx={{ color: 'rgba(255,255,255,0.7)', fontSize: FM.legend, fontWeight: 700 }}>fixed price (locked)</Typography>
                         </Stack>
                     )}
-                    {closedKeys && (
+                    {closedKeys && closedKeys.size > 0 && (
                         <Stack direction="row" alignItems="center" spacing={0.6} sx={{ px: 1, py: 0.5, borderRadius: 1, bgcolor: 'rgba(10,22,35,0.8)', border: '1px solid rgba(255,255,255,0.08)' }}>
                             <Box sx={{ width: 12, height: 12, borderRadius: '3px', bgcolor: '#000', border: '1px solid rgba(255,255,255,0.25)' }} />
                             <Typography sx={{ color: 'rgba(255,255,255,0.7)', fontSize: FM.legend, fontWeight: 700 }}>closed (not scheduled)</Typography>
