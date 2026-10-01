@@ -60,7 +60,7 @@ function DayTypeEditor({ cfg, onCfg, period }) {
 }
 
 export default function AutoPlanBar({
-    period, onPeriod, cfg, onCfg, dateCounts, keepPins, onKeepPins, stayClose, onStayClose,
+    period, onPeriod, cfg, onCfg, dateCounts, keepPins, onKeepPins, base, onBase, baseVersions = [],
     onSolve, solving, progress, draftDates, onApply, onDiscard, note, ready, stale,
 }) {
     const anchor = useRef(null);
@@ -97,7 +97,26 @@ export default function AutoPlanBar({
                     <DayTypeEditor cfg={cfg} onCfg={onCfg} period={period} />
                 </Popover>
                 {chk(keepPins, onKeepPins, 'Keep pinned tables', 'Tables pinned in Planning (or with “Keep previous”) keep their price')}
-                {chk(stayClose, onStayClose, 'Stay close to the saved plan', 'Prefer the price each table already has on these dates when nothing else decides')}
+                <Stack direction="row" sx={{ alignItems: 'center', gap: 0.75 }} role="group" aria-label="Base plan">
+                    <Tooltip title="The plan to adjust: Auto-plan meets the new target mix and changes as few tables from it as it can">
+                        <Typography sx={labelSx}>Base plan</Typography>
+                    </Tooltip>
+                    <Select size="small" value={base.source} MenuProps={selectMenuProps} sx={{ ...inputSx, minWidth: 190 }} inputProps={{ 'aria-label': 'Base plan source' }}
+                        onChange={(e) => onBase({ ...base, source: e.target.value })}>
+                        <MenuItem value="calendar">Plan on the calendar</MenuItem>
+                        {baseVersions.map((v) => (
+                            <MenuItem key={v.n} value={`v:${v.n}`}>{`Version ${v.n}${v.name ? ` · ${v.name}` : ''}`}{v.dates > 1 ? ` (${v.dates} dates)` : ''}</MenuItem>
+                        ))}
+                        <MenuItem value="none">No base plan</MenuItem>
+                    </Select>
+                    {base.source !== 'none' ? (
+                        <Select size="small" value={base.strength} MenuProps={selectMenuProps} sx={{ ...inputSx, minWidth: 170 }} inputProps={{ 'aria-label': 'How close to the base plan' }}
+                            onChange={(e) => onBase({ ...base, strength: e.target.value })}>
+                            <MenuItem value="strong">Keep as close as possible</MenuItem>
+                            <MenuItem value="tie">Only as a tie-break</MenuItem>
+                        </Select>
+                    ) : null}
+                </Stack>
                 <Box sx={{ flex: 1 }} />
                 {draftDates ? (
                     <>

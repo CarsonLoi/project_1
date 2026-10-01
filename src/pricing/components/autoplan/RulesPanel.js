@@ -11,6 +11,7 @@ import AddIcon from '@mui/icons-material/Add';
 import CloseIcon from '@mui/icons-material/Close';
 import { CORE_HOURS, blockLabel } from '../../utils/autoplan/core';
 import { scopeKeys, tablesScope } from '../../utils/autoplan/config';
+import ExemptSelect from './ExemptSelect';
 import { AP, panelSx, titleSx, ghostSx, labelSx, inputSx, selectMenuProps, tierLabel, two } from './apStyles';
 
 const TYPES = [
@@ -73,8 +74,11 @@ export function ruleSummary(r, tierById) {
     return `${sc}: ≤ ${r.n} level${r.n === 1 ? '' : 's'} per change`;
 }
 
-export default function RulesPanel({ cfg, onCfg, tiersAsc, options, costs, usedTiers = [], dayLabel = (d) => d, onRemoveManual, onClearManualDate }) {
+export default function RulesPanel({ cfg, onCfg, tiersAsc, options, costs, usedTiers = [], dayLabel = (d) => d, onRemoveManual, onClearManualDate, onManualExempt }) {
     const rules = cfg.rules;
+    // Pod rules a locked / manual table can be exempted from.
+    const tierMap = new Map(tiersAsc.map((t) => [t.id, t]));
+    const podRules = rules.filter((r) => r.type === 'zonecap').map((r) => ({ id: r.id, text: ruleSummary(r, tierMap) }));
     const setRule = (id, patch) => onCfg({ ...cfg, rules: rules.map((r) => (r.id === id ? { ...r, ...patch } : r)) });
     const add = (type) => {
         const mid = tiersAsc[Math.floor(tiersAsc.length / 2)]?.id;
@@ -143,12 +147,17 @@ export default function RulesPanel({ cfg, onCfg, tiersAsc, options, costs, usedT
                             <Box sx={{ flex: 1 }} />
                             <Button size="small" sx={{ ...ghostSx, minHeight: 26, py: 0, fontSize: 12 }} onClick={() => onClearManualDate(date)}>Clear date</Button>
                         </Stack>
-                        <Box sx={{ display: 'grid', gridTemplateColumns: 'auto auto 1fr auto', columnGap: 1.2, rowGap: 0.2, alignItems: 'center' }}>
-                            {Object.entries(byCore).sort(([a], [b]) => CORE_HOURS.indexOf(Number(a)) - CORE_HOURS.indexOf(Number(b))).flatMap(([core, byKey]) => Object.entries(byKey).map(([key, id]) => (
+                        <Box sx={{ display: 'grid', gridTemplateColumns: podRules.length ? 'auto auto auto 1fr auto' : 'auto auto 1fr auto', columnGap: 1.2, rowGap: 0.4, alignItems: 'center' }}>
+                            {Object.entries(byCore).sort(([a], [b]) => CORE_HOURS.indexOf(Number(a)) - CORE_HOURS.indexOf(Number(b))).flatMap(([core, byKey]) => Object.entries(byKey).map(([key, v]) => (
                                 <React.Fragment key={`${core}|${key}`}>
                                     <Typography sx={{ fontSize: 12.5, fontWeight: 800, color: AP.text }}>{key.replace('|', '')}</Typography>
                                     <Typography sx={{ fontSize: 12, color: AP.faint, fontVariantNumeric: 'tabular-nums' }}>{CORE_HOURS.includes(Number(core)) ? blockLabel(Number(core)) : `${two(core)}:00`}</Typography>
-                                    <Typography sx={{ fontSize: 12.5, color: AP.pin, fontWeight: 800 }}>{tierLabel(tierById(id))}</Typography>
+                                    <Typography sx={{ fontSize: 12.5, color: AP.pin, fontWeight: 800 }}>{tierLabel(tierById(typeof v === 'string' ? v : v.tier))}</Typography>
+                                    {podRules.length ? (
+                                        <ExemptSelect compact value={typeof v === 'string' ? [] : v.exempt || []} podRules={podRules}
+                                            label={`Pod limits for ${key.replace('|', '')} at ${two(core)}:00 on ${date}`}
+                                            onChange={(ex) => onManualExempt(date, Number(core), key, ex)} />
+                                    ) : null}
                                     <IconButton size="small" aria-label={`Remove manual price for ${key.replace('|', '')} at ${two(core)}:00 on ${date}`} onClick={() => onRemoveManual(date, Number(core), key)}
                                         sx={{ p: 0.3, color: AP.faint, '&:hover': { color: AP.bad }, '&.Mui-focusVisible': { outline: `2px solid ${AP.accent}` } }}>
                                         <CloseIcon sx={{ fontSize: 15 }} />
@@ -197,7 +206,15 @@ export default function RulesPanel({ cfg, onCfg, tiersAsc, options, costs, usedT
                                 </>
                             )}
                             {r.type === 'range' && (<><Typography sx={text}>only</Typography>{tierSel(r.lo, (lo) => setRule(r.id, { lo }), 'Lowest price')}<Typography sx={text}>to</Typography>{tierSel(r.hi, (hi) => setRule(r.id, { hi }), 'Highest price')}</>)}
-                            {r.type === 'lock' && (<><Typography sx={text}>fixed at</Typography>{tierSel(r.tier, (tier) => setRule(r.id, { tier }), 'Price')}</>)}
+                            {r.type === 'lock' && (
+                                <>
+                                    <Typography sx={text}>fixed at</Typography>{tierSel(r.tier, (tier) => setRule(r.id, { tier }), 'Price')}
+                                    {podRules.length ? (
+                                        <ExemptSelect value={r.exempt || []} podRules={podRules} label="Pod limits for the locked tables"
+                                            onChange={(ex) => setRule(r.id, { exempt: ex })} />
+                                    ) : null}
+                                </>
+                            )}
                             {r.type === 'maxstep' && (<><Typography sx={text}>changes move at most</Typography>{num(r.n, (n) => setRule(r.id, { n }), 'Levels per change', 1)}<Typography sx={text}>price level(s)</Typography></>)}
                         </Stack>
                         <Stack direction="row" spacing={0.4} sx={{ alignItems: 'center' }} role="group" aria-label="Core hours">

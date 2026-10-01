@@ -175,6 +175,7 @@ export function solveBlock({
     tables, targets, ladders, tierIndex, prev = null, current = null, shares = null,
     pins = new Map(), rules = [], weights, sticky = true, recentChanged = null,
     direction = 'fwd', changeScale = 1, podPenalty = null, night = null, tierLabel = (id) => id,
+    exempt = null,
 }) {
     const W = weights;
     const { targets: tg, notes } = accommodatePins(targets, pins, tables, tierLabel);
@@ -195,6 +196,9 @@ export function solveBlock({
     for (const r of rules.filter((x) => x.type === 'zonecap' && (x.maxOn !== false || (x.minOn && x.min > 0)))) {
         for (const t of tables) {
             if (!inScope(t, r.scope)) continue;
+            // A table exempt from this pod rule neither uses nor fills its slots.
+            const ex = exempt && exempt.get(t.key);
+            if (ex && (ex.includes('*') || ex.includes(r.id))) continue;
             const k = `${t.zone}|${r.tier}|${t.sub}`;
             let c = caps.get(k);
             if (!c) { c = { node: N++, n: Infinity, min: 0, size: 0, zone: t.zone, sub: t.sub, tier: r.tier, keys: new Set() }; caps.set(k, c); }
@@ -236,7 +240,7 @@ export function solveBlock({
             // First core hour: prefer the price the table ended on last night.
             if (night && night.has(t.key) && night.get(t.key) !== id) c += W.night || 0;
             const cap = caps.get(`${t.zone}|${id}|${t.sub}`);
-            arcs.push([id, f.add(u, cap ? cap.node : lNode.get(`${t.sub}|${id}`), 1, c)]);
+            arcs.push([id, f.add(u, cap && cap.keys.has(t.key) ? cap.node : lNode.get(`${t.sub}|${id}`), 1, c)]);
         }
         arcsBy.set(t.key, arcs);
     }

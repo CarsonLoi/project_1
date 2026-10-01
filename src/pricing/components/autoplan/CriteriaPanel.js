@@ -31,7 +31,8 @@ const WEIGHT_ROWS = [
     ['hold', 'Changes again soon after its last change', "Added to a change when the table already changed recently, so the same tables don't flip back and forth"],
     ['rank', 'Each level away from its rank slot', 'Stronger tables go higher, weaker tables go lower'],
     ['hist', 'Price the table rarely runs', 'Full points for a price it never ran, none for its usual price'],
-    ['stay', 'Differs from the saved plan', 'Only used when "Stay close to the saved plan" is ticked'],
+    ['stay', 'Differs from the base plan (tie-break)', 'Used when Base plan is set to “Only as a tie-break”'],
+    ['base', 'Differs from the base plan (keep close)', 'Used when Base plan is set to “Keep as close as possible”: outranks a change between hours'],
 ];
 const text = { fontSize: 13.5, color: AP.text };
 const help = { fontSize: 12, color: AP.faint, lineHeight: 1.4 };
@@ -177,7 +178,7 @@ function SolveOrderStrip({ coreHours, anchor }) {
 
 export default function CriteriaPanel({
     cfg, onCfg, onCoreHours, ladders, tierById, histWindow, rankWindow, levels, stale, hasDraft, onSolve, solving,
-    refDate, refLabel, breakdown, mixFor, subs,
+    refDate, refLabel, breakdown, mixFor, subs, baseStrength = 'tie',
 }) {
     const w = cfg.weights, c = cfg.criteria, core = cfg.coreHours;
     const [preview, setPreview] = useState(false);
@@ -199,14 +200,16 @@ export default function CriteriaPanel({
     const setMix = (i, patch) => setC({ rankMix: mix.map((m, j) => (j === i ? { ...m, ...patch } : m)) });
     const pct = (m) => (mixW ? Math.round((m.w / mixW) * 100) : 0);
 
+    const strongBase = baseStrength === 'strong';
     const DECIDES = [
         ['Rules and manual prices', 'Never broken: pod limits, locks, price ranges, and every price you set by hand.'],
         ['Target mix', 'Exactly how many tables at each price, per sub-segment and core hour.'],
+        ...(strongBase ? [['Base plan', 'Only the tables the new mix forces differ from the base plan (toolbar → Base plan).']] : []),
         ['Fewest changes', `Each hour keeps its neighbour's prices where it can; ${two(anchor ?? 21)}:00 keeps the reference day's, and ${two(core[0])}:00 leans to last night's.`],
         ['Closest price', 'A table that must change moves to the nearest price level.'],
         ['Performance rank', 'Among the rest, better-ranked tables take the higher prices.'],
         ['Price history', 'Ties go to the price a table usually runs.'],
-        ['Saved plan', 'With “Stay close” ticked, ties keep what is already saved.'],
+        ...(strongBase ? [] : [['Base plan', 'Ties keep what the base plan has (toolbar → Base plan, “Only as a tie-break”).']]),
     ];
 
     return (
@@ -399,7 +402,7 @@ export default function CriteriaPanel({
                     {preview ? <RankPreview breakdown={breakdown} subs={subs} coreHours={core} basis={c.rankBasis} mixFor={mixFor} ladders={ladders} tierById={tierById} mix={mix} defaultCore={anchor ?? core[0]} /> : null}
                 </Box>
                 <Typography sx={help}>
-                    On dates that already have a saved plan, “Stay close to the saved plan” ({w.stay.toLocaleString()} pts) outweighs the rank ({w.rank.toLocaleString()} pts a level). Untick it in the toolbar to re-rank those dates.
+                    With a base plan in the toolbar, keeping its prices ({w.stay.toLocaleString()} pts as a tie-break) outweighs the rank ({w.rank.toLocaleString()} pts a level). Set Base plan to “No base plan” to re-rank from scratch.
                 </Typography>
             </Section>
 

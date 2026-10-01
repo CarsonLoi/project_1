@@ -11,14 +11,15 @@ import { foldToLadder } from './inputs';
 // step:   per price level jumped — keeps forced changes to the closest price.
 // raise:  extra when a change raises the price in time order.
 // night:  at the first core hour, differs from the previous date's last core hour.
-export const DEFAULT_WEIGHTS = { change: 10000, stay: 300, step: 1000, rank: 10, hist: 10, hold: 500, align: 10000, raise: 0, night: 2000 };
+// base:   differs from the base plan when "keep it as close as possible" (outranks change).
+export const DEFAULT_WEIGHTS = { change: 10000, stay: 300, step: 1000, rank: 10, hist: 10, hold: 500, align: 10000, raise: 0, night: 2000, base: 30000 };
 
 // Scoring presets. "Fewest changes" keeps a change far costlier than any
 // rank / history gain; the others let rank or history win over a change.
 export const WEIGHT_PRESETS = [
     { id: 'fewest', label: 'Fewest changes', help: 'A change is only made when the targets force it', weights: DEFAULT_WEIGHTS },
-    { id: 'rank', label: 'Follow performance', help: 'Best tables take the higher prices, even if more tables change', weights: { change: 60, stay: 30, step: 5, rank: 100, hist: 10, hold: 40, align: 60, raise: 0, night: 20 } },
-    { id: 'hist', label: 'Follow history', help: 'Tables keep the prices they usually run, even if more tables change', weights: { change: 60, stay: 30, step: 5, rank: 10, hist: 100, hold: 40, align: 60, raise: 0, night: 20 } },
+    { id: 'rank', label: 'Follow performance', help: 'Best tables take the higher prices, even if more tables change', weights: { change: 60, stay: 30, step: 5, rank: 100, hist: 10, hold: 40, align: 60, raise: 0, night: 20, base: 30000 } },
+    { id: 'hist', label: 'Follow history', help: 'Tables keep the prices they usually run, even if more tables change', weights: { change: 60, stay: 30, step: 5, rank: 10, hist: 100, hold: 40, align: 60, raise: 0, night: 20, base: 30000 } },
 ];
 const WEIGHT_KEYS = Object.keys(DEFAULT_WEIGHTS);
 export function presetOf(w) {
@@ -131,6 +132,16 @@ function mergePrices(p) {
 }
 
 // Manual prices: date → core hour → table → tier. Malformed parts drop out.
+// Pod-limit exemption: ['*'] = every pod rule, else the pod rule ids.
+export const cleanExempt = (e) => (Array.isArray(e) ? (e.includes('*') ? ['*'] : [...new Set(e.filter((x) => Number.isFinite(Number(x))).map(Number))]) : []);
+export const isExempt = (exempt, ruleId) => !!exempt && (exempt.includes('*') || exempt.includes(ruleId));
+// Change only the exemption of one manual price.
+export function withManualExempt(cfg, date, core, key, exempt) {
+    const v = (((cfg.manual || {})[date] || {})[core] || {})[key];
+    if (!v) return cfg;
+    return withManual(cfg, date, core, [key], entryTier(v), exempt);
+}
+
 function mergeManual(m) {
     const out = {};
     if (!m || typeof m !== 'object' || Array.isArray(m)) return out;
@@ -138,7 +149,8 @@ function mergeManual(m) {
         if (!ISO.test(date) || !byCore || typeof byCore !== 'object') continue;
         for (const [core, byKey] of Object.entries(byCore)) {
             if (!byKey || typeof byKey !== 'object') continue;
-            const ok = Object.entries(byKey).filter(([, id]) => typeof id === 'string');
+            const ok = Object.entries(byKey).filter(([, v]) => typeof v === 'string' || (v && typeof v === 'object' && typeof v.tier === 'string'))
+                .map(([k, v]) => [k, typeof v === 'string' ? v : { tier: v.tier, exempt: cleanExempt(v.exempt) }]);
             if (!ok.length) continue;
             out[date] = out[date] || {};
             out[date][core] = Object.fromEntries(ok);
@@ -149,6 +161,7 @@ function mergeManual(m) {
 
 // Zone (pod) rules carry an optional minimum and maximum, each switchable.
 export function normalizeRule(r) {
+    if (r.type === 'lock') return r.exempt ? { ...r, exempt: cleanExempt(r.exempt) } : r;
     if (r.type !== 'zonecap') return r;
     return {
         ...r,
@@ -213,12 +226,19 @@ export function clearDateTargets(cfg, date) {
 }
 
 // ── Manual prices (a rule for one date + core-hour block) ────────────
-export const manualFor = (cfg, date, core) => new Map(Object.entries(((cfg.manual || {})[date] || {})[core] || {}));
-export function withManual(cfg, date, core, keys, tierId) {
+// A manual entry is a tier id, or { tier, exempt } when the table is exempt
+// from pod limits (exempt = ['*'] for all, or a list of pod rule ids).
+const entryTier = (v) => (typeof v === 'string' ? v : v && v.tier);
+const entryExempt = (v) => (v && typeof v === 'object' ? v.exempt || [] : []);
+export const manualFor = (cfg, date, core) => new Map(Object.entries(((cfg.manual || {})[date] || {})[core] || {}).map(([k, v]) => [k, entryTier(v)]));
+export const manualExemptFor = (cfg, date, core) => new Map(Object.entries(((cfg.manual || {})[date] || {})[core] || {})
+    .filter(([, v]) => entryExempt(v).length).map(([k, v]) => [k, entryExempt(v)]));
+export function withManual(cfg, date, core, keys, tierId, exempt = null) {
     const manual = { ...(cfg.manual || {}) };
     const byCore = { ...(manual[date] || {}) };
     const byKey = { ...(byCore[core] || {}) };
-    for (const k of keys) { if (tierId) byKey[k] = tierId; else delete byKey[k]; }
+    const ex = cleanExempt(exempt);
+    for (const k of keys) { if (tierId) byKey[k] = ex.length ? { tier: tierId, exempt: ex } : tierId; else delete byKey[k]; }
     if (Object.keys(byKey).length) byCore[core] = byKey; else delete byCore[core];
     if (Object.keys(byCore).length) manual[date] = byCore; else delete manual[date];
     return { ...cfg, manual };

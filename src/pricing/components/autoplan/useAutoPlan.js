@@ -8,13 +8,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { fetchDailyData, fetchHourlyData, gametypeTableKey } from '../../../performance/utils/dataSource';
 import { fetchScheduleHours } from '../../utils/scheduleSource';
 import { CORE_HOURS, DAY_TYPES, addDays, blockHours, blockLabel, datesBetween, dayTypeOf, lastCore, nextMonthRange, normalizeCoreHours, setCoreHours } from '../../utils/autoplan/core';
-import { mergeAutoplan, withTargets, withManual, withPrices, manualFor, targetsFor, dateKey, clearManualDate, tablesScope } from '../../utils/autoplan/config';
+import { mergeAutoplan, withTargets, withManual, withManualExempt, withPrices, manualFor, manualExemptFor, isExempt, targetsFor, dateKey, clearManualDate, tablesScope } from '../../utils/autoplan/config';
 import {
     aggregateRows, allocate, baseLadders, blendFromAgg, effectiveLadders, fitToCaps, fitToFloors, foldToLadder, historyShares, laddersFrom,
     openByBlock, seedTargets, signalBreakdown, sourceWindow,
 } from '../../utils/autoplan/inputs';
 import { capsForSub, floorsForSub, inScope, rulesFor } from '../../utils/autoplan/solver';
-import { pickAnchor, pickReferenceDate, readBlockMap, readPins, solveDate, solveReference } from '../../utils/autoplan/period';
+import { pickAnchor, pickReferenceDate, readBlockMap, readPins, readVersionBlockMap, solveDate, solveReference } from '../../utils/autoplan/period';
 import { applyDraft } from '../../utils/autoplan/apply';
 import { SEGMENT_PRICES } from '../../constants/segmentPrices';
 import { savePricing } from '../../utils/pricingStorage';
@@ -92,7 +92,11 @@ export default function useAutoPlan({ store, setStore, tiers, tables: floorTable
 
     const [period, setPeriod] = useState(() => nextMonthRange(todayIso()));
     const [keepPins, setKeepPins] = useState(true);
-    const [stayClose, setStayClose] = useState(true);
+    // Base plan to adjust: what's on the calendar now (e.g. an old version
+    // loaded with Load plan), a saved version, or none; kept as a tie-break
+    // or as close as possible (only the tables the new mix forces change).
+    const [base, setBase] = useState({ source: 'calendar', strength: 'tie' });
+    const stayClose = base.source !== 'none';
     const [rows, setRows] = useState(null);           // { daily, hourly }
     const [schedule, setSchedule] = useState({ key: null, byDate: {} });
     const [rawDraft, setDraft] = useState(null);      // { byDate, reports, pins, at, key, coreKey, ref, refDate, anchors, alignDiffs }
@@ -180,9 +184,9 @@ export default function useAutoPlan({ store, setStore, tiers, tables: floorTable
     // Price lists: the user's edits per sub-segment, else what history ran.
     const pricesKey = JSON.stringify(cfg.prices);
     // Base = constants/segmentPrices.js, else history; the page's edits win.
-    const base = useMemo(() => (history ? baseLadders(history.ladders, tiersAsc, SEGMENT_PRICES) : {}), [history, tiersAsc]);
+    const baseLad = useMemo(() => (history ? baseLadders(history.ladders, tiersAsc, SEGMENT_PRICES) : {}), [history, tiersAsc]);
     const priceSourceOf = useCallback((sub) => ((cfg.prices || {})[sub] ? 'edited'
-        : (SEGMENT_PRICES[sub] || []).length && history && base[sub] !== history.ladders[sub] ? 'config' : 'history'), [cfg.prices, base, history]);
+        : (SEGMENT_PRICES[sub] || []).length && history && baseLad[sub] !== history.ladders[sub] ? 'config' : 'history'), [cfg.prices, baseLad, history]);
     const ladders = useMemo(() => (history ? effectiveLadders(history.ladders, cfg.prices, tiersAsc, SEGMENT_PRICES) : {}),
         [history, pricesKey, tiersAsc]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -290,22 +294,25 @@ export default function useAutoPlan({ store, setStore, tiers, tables: floorTable
         const currentByDate = {}, pinsByDate = {};
         for (const d of dates) {
             currentByDate[d] = {};
-            for (const core of CORE_HOURS) { const m = readBlockMap(store, d, core); if (m.size) currentByDate[d][core] = m; }
+            for (const core of CORE_HOURS) {
+                const m = String(base.source).startsWith('v:') ? readVersionBlockMap(store, d, Number(base.source.slice(2)), core) : readBlockMap(store, d, core);
+                if (m.size) currentByDate[d][core] = m;
+            }
             pinsByDate[d] = Object.fromEntries(CORE_HOURS.map((c) => [c, readPins(store, d, c)]));
         }
         return {
             cfg: cfgArg, tables, tiersAsc, tierIndex, tierLabel: (id) => tierLabel(tierById.get(id)),
             ladders, sharesByDt: history.sharesByDt, valuesFor: history.valuesFor, valuesByDt: {}, seededByDt: seeded,
-            openByDate, currentByDate, pinsByDate, keepPins, stayClose,
+            openByDate, currentByDate, pinsByDate, keepPins, stayClose, baseStrength: base.strength,
         };
-    }, [cfg, dates, store, tables, tiersAsc, tierIndex, tierById, history, ladders, seeded, openByDate, keepPins, stayClose, coreKey]); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [cfg, dates, store, tables, tiersAsc, tierIndex, tierById, history, ladders, seeded, openByDate, keepPins, stayClose, base, coreKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
     // What a solve depends on besides the data: when it differs from the
     // draft's, the draft is out of date ("Solve again").
     const solveKey = useMemo(() => JSON.stringify({
         t: cfg.targets, r: cfg.rules, w: cfg.weights, c: cfg.criteria, h: cfg.coreHours, p: cfg.prices, x: cfg.manual,
-        m: cfg.dowMap, o: cfg.overrides, keepPins, stayClose, period,
-    }), [cfg, keepPins, stayClose, period]);
+        m: cfg.dowMap, o: cfg.overrides, keepPins, base, period,
+    }), [cfg, keepPins, base, period]);
 
     const refDate = useMemo(() => pickReferenceDate(dates, cfg, openByDate, crit.anchorCore),
         [dates, cfg, openByDate, crit.anchorCore]);
@@ -351,10 +358,14 @@ export default function useAutoPlan({ store, setStore, tiers, tables: floorTable
         pendingRef.current = null;
         solveDates(only === 'all' ? null : only);
     }, [cfg.manual, cfg.rules, solveDates]);
-    const setManual = useCallback((date, core, keys, tierId) => {
+    const resolveAfter = useCallback((date, core) => {
         const anchorOfRef = pickAnchor(CORE_HOURS, crit.anchorCore, openByDate[refDate]);
         if (draft) pendingRef.current = date === refDate && core === anchorOfRef ? 'all' : [date];
-        let next = withManual(cfg, date, core, keys, tierId);
+    }, [crit.anchorCore, openByDate, refDate, draft]);
+    // exempt: [] counts toward pod limits, ['*'] exempt from all, [ruleId…] from those.
+    const setManual = useCallback((date, core, keys, tierId, exempt = null) => {
+        resolveAfter(date, core);
+        let next = withManual(cfg, date, core, keys, tierId, exempt);
         // A manual price outside a sub-segment's list joins the list.
         if (tierId) {
             for (const sub of new Set(keys.map((k) => (tableByKey.get(k) || {}).sub).filter(Boolean))) {
@@ -363,7 +374,11 @@ export default function useAutoPlan({ store, setStore, tiers, tables: floorTable
             }
         }
         setCfg(next);
-    }, [cfg, setCfg, draft, refDate, openByDate, crit.anchorCore, tableByKey, ladders, tiersAsc]);
+    }, [cfg, setCfg, resolveAfter, tableByKey, ladders, tiersAsc]);
+    const setManualExempt = useCallback((date, core, key, exempt) => {
+        resolveAfter(date, core);
+        setCfg(withManualExempt(cfg, date, core, key, exempt));
+    }, [cfg, setCfg, resolveAfter]);
     const keepAndResolve = useCallback((date, core, key, tier) => setManual(date, core, [key], tier), [setManual]);
     // A rule for tables picked on the floor (lock / range / max step), every
     // date. A locked price outside a sub-segment's list joins the list.
@@ -414,19 +429,21 @@ export default function useAutoPlan({ store, setStore, tiers, tables: floorTable
             const rep = draft.reports[d];
             if (!rep) continue;
             // Within the day vs the overnight handover (previous date's last core → first core).
-            let changes = 0, lb = 0, problems = 0, podOver = 0;
+            let changes = 0, lb = 0, problems = 0, podOver = 0, baseDiffs = 0, baseLb = 0;
             for (const c of CORE_HOURS) {
                 problems += rep[c].problems.length; podOver += (rep[c].podOver || []).length;
                 if (c === CORE_HOURS[0]) continue;
                 changes += rep[c].changes.length; lb += rep[c].lb;
             }
-            out[d] = { changes, lb, problems, podOver, overnight: rep[CORE_HOURS[0]].changes.length, alignDiffs: (draft.alignDiffs || {})[d] || 0 };
+            for (const c of CORE_HOURS) { baseDiffs += (rep[c].baseChanges || []).length; baseLb += rep[c].baseLb || 0; }
+            out[d] = { changes, lb, problems, podOver, baseDiffs, baseLb, overnight: rep[CORE_HOURS[0]].changes.length, alignDiffs: (draft.alignDiffs || {})[d] || 0 };
         }
         return out;
     }, [draft, dates]);
     const totals = useMemo(() => Object.values(dateStats).reduce((a, s) => ({
         changes: a.changes + s.changes, lb: a.lb + s.lb, problems: a.problems + s.problems, podOver: a.podOver + s.podOver, alignDiffs: a.alignDiffs + s.alignDiffs, overnight: a.overnight + s.overnight,
-    }), { changes: 0, lb: 0, problems: 0, podOver: 0, alignDiffs: 0, overnight: 0 }), [dateStats]);
+        baseDiffs: a.baseDiffs + s.baseDiffs, baseLb: a.baseLb + s.baseLb,
+    }), { changes: 0, lb: 0, problems: 0, podOver: 0, alignDiffs: 0, overnight: 0, baseDiffs: 0, baseLb: 0 }), [dateStats]);
 
     // Rule checks + per-rule cost and the hour-by-hour baseline, for one date.
     const [measure, setMeasure] = useState({ key: null, costs: new Map(), baseline: null, busy: false });
@@ -460,10 +477,16 @@ export default function useAutoPlan({ store, setStore, tiers, tables: floorTable
                 const a = plan[core];
                 if (!a) continue;
                 if (r.type === 'zonecap') {
+                    // Tables exempt from this pod rule (manual or lock-rule exemption) don't count.
+                    const ex = new Map(manualExemptFor(cfg, date, core));
+                    for (const lr of cfg.rules) {
+                        if (!lr.on || lr.type !== 'lock' || !(lr.exempt || []).length || !(lr.hours || []).includes(core)) continue;
+                        for (const t of tables) if (!ex.has(t.key) && inScope(t, lr.scope)) ex.set(t.key, lr.exempt);
+                    }
                     const have = {}, size = {};
                     for (const [k, id] of a) {
                         const t = tableByKey.get(k);
-                        if (!t || !inScope(t, r.scope)) continue;
+                        if (!t || !inScope(t, r.scope) || isExempt(ex.get(k), r.id)) continue;
                         const z = `${t.sub}|${t.zone}`;
                         size[z] = (size[z] || 0) + 1;
                         if (id === r.tier) have[z] = (have[z] || 0) + 1;
@@ -481,7 +504,7 @@ export default function useAutoPlan({ store, setStore, tiers, tables: floorTable
             }
             return { rule: r, ok, cost: measure.key && measure.key.endsWith(`|${date}`) ? measure.costs.get(r.id) ?? null : null };
         });
-    }, [draft, cfg.rules, tableByKey, tierIndex, measure, openByDate, tables]);
+    }, [draft, cfg, tableByKey, tierIndex, measure, openByDate, tables]);
 
     const changeSheet = useCallback(() => {
         if (!draft) return '';
@@ -522,6 +545,20 @@ export default function useAutoPlan({ store, setStore, tiers, tables: floorTable
         setCfg({ ...cfg, ...patch, coreHours: next, rules });
     }, [cfg, setCfg]);
 
+    // Saved versions found on the period's dates (by version number), for "Plan from".
+    const baseVersions = useMemo(() => {
+        const out = new Map();
+        for (const d of dates) for (const v of (((store.plans || {})[d] || {}).versions || [])) {
+            if (!out.has(v.versionNumber)) out.set(v.versionNumber, { n: v.versionNumber, name: v.name || '', dates: 0 });
+            out.get(v.versionNumber).dates += 1;
+        }
+        return [...out.values()].sort((x, y) => y.n - x.n);
+    }, [dates, store.plans]);
+
+    // Whether the chosen base plan has any prices on the period's dates.
+    const baseFound = useMemo(() => base.source !== 'none' && dates.some((d) => CORE_HOURS.some((c) => (String(base.source).startsWith('v:')
+        ? readVersionBlockMap(store, d, Number(base.source.slice(2)), c) : readBlockMap(store, d, c)).size > 0)), [base.source, dates, store, coreKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
     const dateCounts = useMemo(() => {
         const c = {};
         for (const d of dates) c[dtOf(d)] = (c[dtOf(d)] || 0) + 1;
@@ -529,13 +566,13 @@ export default function useAutoPlan({ store, setStore, tiers, tables: floorTable
     }, [dates, dtOf]);
 
     return {
-        cfg, setCfg, setCoreHours: setCoreHoursCfg, period, setPeriod, keepPins, setKeepPins, stayClose, setStayClose,
+        cfg, setCfg, setCoreHours: setCoreHoursCfg, period, setPeriod, keepPins, setKeepPins, base, setBase, baseVersions, baseFound,
         stale: !!draft && draft.key !== solveKey,
         ready: !!history && dates.length > 0, loading: active && !rows, history, dates, dtOf, dateCounts,
-        tables, tableByKey, tiersAsc, tierIndex, tierById, ladders, historyLadders: base, priceSourceOf, subs,
+        tables, tableByKey, tiersAsc, tierIndex, tierById, ladders, historyLadders: baseLad, priceSourceOf, subs,
         refOpen, openCountFor, seeded, mixFor, capsFor, floorsFor, fitMix, seedDayType, openByDate, missingSchedule, hasSchedule: (d) => !!schedule.byDate[d],
         refDate, anchorFor: (d) => pickAnchor(CORE_HOURS, crit.anchorCore, openByDate[d]),
-        draft, solving, progress, solve: () => solveDates(null), keepAndResolve, setManual, clearManual, addTableRule, discard, apply, overlay, closedCheck,
+        draft, solving, progress, solve: () => solveDates(null), keepAndResolve, setManual, setManualExempt, clearManual, addTableRule, discard, apply, overlay, closedCheck,
         dateStats, totals, measure, measureDate, ruleChecks, changeSheet, pinsFor, rankPctOf, rankBreakdown, dateKey,
     };
 }

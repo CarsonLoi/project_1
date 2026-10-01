@@ -1432,7 +1432,7 @@ export default function PricingDashboard() {
                             period={ap.period} onPeriod={ap.setPeriod}
                             cfg={ap.cfg} onCfg={ap.setCfg} dateCounts={ap.dateCounts}
                             keepPins={ap.keepPins} onKeepPins={ap.setKeepPins}
-                            stayClose={ap.stayClose} onStayClose={ap.setStayClose}
+                            base={ap.base} onBase={ap.setBase} baseVersions={ap.baseVersions}
                             onSolve={() => { ap.solve(); if (!ap.dates.includes(date)) setDate(ap.dates[0]); setApTab('result'); }}
                             solving={ap.solving} progress={ap.progress} ready={ap.ready} stale={ap.stale}
                             draftDates={ap.draft ? Object.keys(ap.draft.byDate).length : 0}
@@ -1757,7 +1757,8 @@ export default function PricingDashboard() {
                                 setApToast(`Rule added: ${summary}${ap.draft ? ' Solving again…' : ' Solve to see it.'}`);
                                 setTimeout(() => setApToast(''), 4500);
                             }}
-                            onSetManual={(tierId) => { ap.setManual(date, coreFor(scrubHour), [...selectedKeys], tierId); setSelectedKeys(new Set()); }}
+                            onSetManual={(tierId, exempt) => { ap.setManual(date, coreFor(scrubHour), [...selectedKeys], tierId, exempt); setSelectedKeys(new Set()); }}
+                            podRules={ap.cfg.rules.filter((r) => r.type === 'zonecap').map((r) => ({ id: r.id, text: ruleSummary(r, ap.tierById) }))}
                             onClearManual={() => ap.setManual(date, coreFor(scrubHour), [...selectedKeys], null)}
                             onDeselect={() => setSelectedKeys(new Set())}
                         />
@@ -1835,6 +1836,7 @@ export default function PricingDashboard() {
                             dayLabel={(d) => (DAY_TYPES.find((x) => x.id === ap.dtOf(d)) || {}).label || ''}
                             onRemoveManual={(d, c, k) => ap.setManual(d, c, [k], null)}
                             onClearManualDate={ap.clearManual}
+                            onManualExempt={ap.setManualExempt}
                         />
                     )}
                     {autoMode && apTab === 'criteria' && (
@@ -1843,7 +1845,7 @@ export default function PricingDashboard() {
                             ladders={ap.ladders} tierById={ap.tierById}
                             histWindow={ap.history ? ap.history.window : null} rankWindow={ap.history ? ap.history.rankWindow : null}
                             refDate={ap.refDate} refLabel={ap.refDate ? `${DAY_TYPES.find((d) => d.id === ap.dtOf(ap.refDate))?.label || ''} ${ap.refDate}` : ''}
-                            breakdown={ap.rankBreakdown} mixFor={ap.mixFor} subs={sortSubSegments(ap.subs)}
+                            breakdown={ap.rankBreakdown} mixFor={ap.mixFor} subs={sortSubSegments(ap.subs)} baseStrength={ap.base.source === 'none' ? 'none' : ap.base.strength}
                             levels={Math.max(2, ...Object.values(ap.ladders).map((l) => l.length))}
                             stale={ap.stale} hasDraft={!!ap.draft} solving={ap.solving}
                             onSolve={() => { ap.solve(); if (!ap.dates.includes(date)) setDate(ap.dates[0]); }}
@@ -1863,6 +1865,7 @@ export default function PricingDashboard() {
                             ruleChecks={ap.ruleChecks(date)} costsBusy={ap.measure.busy}
                             baseline={ap.measure.key && ap.measure.key.endsWith(`|${date}`) ? ap.measure.baseline : null}
                             ruleText={(r) => ruleSummary(r, ap.tierById)}
+                            hasBase={ap.baseFound}
                             closed={ap.closedCheck(ap.draft && ap.draft.reports[date] ? date : (ap.dates[0] || date))}
                             alignDiffs={ap.draft ? (ap.draft.alignDiffs || {})[ap.draft.reports[date] ? date : ap.dates[0]] || 0 : 0}
                             anchor={ap.draft ? (ap.draft.anchors || {})[ap.draft.reports[date] ? date : ap.dates[0]] ?? 21 : 21}

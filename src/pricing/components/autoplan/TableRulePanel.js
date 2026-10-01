@@ -8,6 +8,7 @@ import React, { useEffect, useState } from 'react';
 import { Box, Button, ButtonBase, MenuItem, Select, Stack, TextField, Typography } from '@mui/material';
 import CloseIcon from '@mui/icons-material/Close';
 import { AP, ghostSx, primarySx, labelSx, inputSx, selectMenuProps, tierLabel, two } from './apStyles';
+import ExemptSelect from './ExemptSelect';
 
 const MODES = [['lock', 'Lock price'], ['range', 'Price range'], ['maxstep', 'Max step'], ['manual', 'This date only']];
 
@@ -34,7 +35,7 @@ function PriceButtons({ tiers, value, onChange }) {
 }
 
 export default function TableRulePanel({
-    keys, labelOf, tiers, coreHours, currentCore, blockText, dateText, currentTier, manualCount,
+    keys, labelOf, tiers, coreHours, currentCore, blockText, dateText, currentTier, manualCount, podRules = [],
     onApplyRule, onSetManual, onClearManual, onDeselect, busy,
 }) {
     const [mode, setMode] = useState('lock');
@@ -43,6 +44,7 @@ export default function TableRulePanel({
     const [hi, setHi] = useState(tiers[tiers.length - 1]?.id || '');
     const [n, setN] = useState(1);
     const [hours, setHours] = useState(coreHours);
+    const [exempt, setExempt] = useState([]);
     useEffect(() => { setTier(currentTier || null); }, [currentTier]);
     if (!keys.length) return null;
 
@@ -54,13 +56,14 @@ export default function TableRulePanel({
         : mode === 'range' ? lo && hi && tiers.findIndex((t) => t.id === lo) <= tiers.findIndex((t) => t.id === hi) && hours.length > 0
             : mode === 'maxstep' ? n >= 1 && hours.length > 0
                 : !!tier;
-    const summary = mode === 'lock' ? (tier ? `Lock ${who} at ${tl(tier)}, ${hoursText}, every date.` : 'Pick a price.')
+    const exText = exempt.length ? (exempt.includes('*') ? ' Exempt from pod limits.' : ` Exempt from: ${(podRules.find((r) => r.id === exempt[0]) || { text: 'a pod rule' }).text}.`) : '';
+    const summary = mode === 'lock' ? (tier ? `Lock ${who} at ${tl(tier)}, ${hoursText}, every date.${exText}` : 'Pick a price.')
         : mode === 'range' ? `Keep ${who} between ${tl(lo)} and ${tl(hi)}, ${hoursText}, every date.`
             : mode === 'maxstep' ? `${who}: a change moves at most ${n} price level${n === 1 ? '' : 's'}, ${hoursText}.`
-                : (tier ? `Set ${who} to ${tl(tier)} for block ${blockText} on ${dateText} only.` : 'Pick a price.');
+                : (tier ? `Set ${who} to ${tl(tier)} for block ${blockText} on ${dateText} only.${exText}` : 'Pick a price.');
     const apply = () => {
-        if (mode === 'manual') onSetManual(tier);
-        else onApplyRule(mode === 'lock' ? { type: 'lock', tier, hours } : mode === 'range' ? { type: 'range', lo, hi, hours } : { type: 'maxstep', n, hours }, summary);
+        if (mode === 'manual') onSetManual(tier, exempt);
+        else onApplyRule(mode === 'lock' ? { type: 'lock', tier, hours, ...(exempt.length ? { exempt } : {}) } : mode === 'range' ? { type: 'range', lo, hi, hours } : { type: 'maxstep', n, hours }, summary);
     };
     const sel = (value, onChange, label) => (
         <Select size="small" value={value} MenuProps={selectMenuProps} sx={{ ...inputSx, minWidth: 104 }} inputProps={{ 'aria-label': label }} onChange={(e) => onChange(e.target.value)}>
@@ -103,6 +106,13 @@ export default function TableRulePanel({
             </Stack>
 
             {mode === 'lock' || mode === 'manual' ? <PriceButtons tiers={tiers} value={tier} onChange={setTier} /> : null}
+            {(mode === 'lock' || mode === 'manual') && podRules.length ? (
+                <Stack direction="row" sx={{ alignItems: 'center', gap: 0.8, mt: 1, flexWrap: 'wrap' }}>
+                    <Typography sx={{ ...labelSx, fontSize: 10.5 }}>Pod limits</Typography>
+                    <ExemptSelect value={exempt} onChange={setExempt} podRules={podRules} label="Pod limits for these tables" />
+                    <Typography sx={{ fontSize: 11.5, color: AP.faint }}>{exempt.length ? 'These tables sit on top of the pod limit.' : 'These tables use up pod-limit slots.'}</Typography>
+                </Stack>
+            ) : null}
             {mode === 'range' ? (
                 <Stack direction="row" sx={{ alignItems: 'center', gap: 0.8 }}>
                     <Typography sx={{ fontSize: 13.5, color: AP.text }}>Only</Typography>{sel(lo, setLo, 'Lowest price')}

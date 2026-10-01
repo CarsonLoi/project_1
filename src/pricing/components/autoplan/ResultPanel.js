@@ -37,19 +37,22 @@ function CheckLine({ ok, text }) {
 export default function ResultPanel({
     hasDraft, onSolve, dates, date, onDate, dateStats, dayTypeOfDate, totals, report, core, onCore,
     tierById, tierIndex, tableByKey, rankPct, pins, onKeepPrevious, ruleChecks, costsBusy, onDownload, baseline, ruleText,
-    closed = null, alignDiffs = 0, anchor = 21, refText = '',
+    closed = null, alignDiffs = 0, anchor = 21, refText = '', hasBase = false,
 }) {
     const [sort, setSort] = useState({ key: 'sub', dir: 1 });
     const rep = report && report[core];
+    // The change list: from the previous hour, or the differences from the base plan.
+    const [vs, setVs] = useState('hour');
+    const showBase = hasBase && vs === 'base';
     const rows = useMemo(() => {
         if (!rep) return [];
-        const list = rep.changes.map((c) => {
+        const list = (showBase ? rep.baseChanges || [] : rep.changes).map((c) => {
             const t = tableByKey.get(c.key) || {};
             return { ...c, sub: t.sub || '', zone: t.zone || '', step: (tierIndex.get(c.to) ?? 0) - (tierIndex.get(c.from) ?? 0) };
         });
         const get = { table: (r) => r.key, sub: (r) => `${r.sub}|${r.zone}`, from: (r) => tierIndex.get(r.from), to: (r) => tierIndex.get(r.to), step: (r) => r.step }[sort.key];
         return list.sort((a, b) => { const x = get(a), y = get(b); return (typeof x === 'string' ? x.localeCompare(y) : x - y) * sort.dir || a.key.localeCompare(b.key); });
-    }, [rep, tableByKey, tierIndex, sort]);
+    }, [rep, tableByKey, tierIndex, sort, showBase]);
 
     if (!hasDraft) {
         return (
@@ -87,6 +90,10 @@ export default function ResultPanel({
                 <Stack direction="row" sx={{ flexWrap: 'wrap', gap: 0.8 }}>
                     <Kpi label="Changes within days" value={totals.changes.toLocaleString()} sub={`${dates.length} dates`} />
                     <Kpi label="Minimum possible" value={totals.lb.toLocaleString()} color={totals.changes === totals.lb ? AP.ok : AP.warn} sub={totals.changes === totals.lb ? 'at the minimum' : `+${totals.changes - totals.lb} from rules or scoring`} />
+                    {hasBase ? (
+                        <Kpi label="Differs from base plan" value={(totals.baseDiffs || 0).toLocaleString()} color={totals.baseDiffs === totals.baseLb ? AP.ok : AP.warn}
+                            sub={totals.baseDiffs === totals.baseLb ? `table-blocks · the minimum the new mix needs` : `table-blocks · minimum ${totals.baseLb}`} />
+                    ) : null}
                     <Kpi label={`Overnight ${two(lastCore())} → ${two(firstCore())}`} value={(totals.overnight || 0).toLocaleString()} color={AP.muted} sub="each day starts from its anchor hour" />
                     {baseline != null ? (
                         <Kpi label="If planned hour by hour" value={baseline} color={baseline > dayChanges ? AP.bad : AP.muted}
@@ -160,10 +167,20 @@ export default function ResultPanel({
             </Box>
 
             <Box sx={panelSx}>
+                {hasBase ? (
+                    <Stack direction="row" role="radiogroup" aria-label="Compare with" sx={{ border: `1px solid ${AP.line}`, borderRadius: 1.5, overflow: 'hidden', mb: 1 }}>
+                        {[['hour', 'Changes from the previous hour'], ['base', 'Differences from the base plan']].map(([v, l]) => (
+                            <Box key={v} component="button" type="button" role="radio" aria-checked={vs === v} onClick={() => setVs(v)}
+                                sx={{ all: 'unset', cursor: 'pointer', flex: 1, textAlign: 'center', py: 0.6, fontSize: 12.5, fontWeight: 800, color: vs === v ? AP.accentInk : AP.text, bgcolor: vs === v ? AP.accent : 'transparent', '&:focus-visible': { outline: `2px solid ${AP.accent}`, outlineOffset: -2 }, '& + &': { borderLeft: `1px solid ${AP.line}` } }}>
+                                {l}
+                            </Box>
+                        ))}
+                    </Stack>
+                ) : null}
                 <Typography sx={{ fontWeight: 800, color: '#fff', fontSize: 15, mb: 0.3 }}>
-                    {rows.length} table{rows.length === 1 ? '' : 's'} change at {two(core)}:00 <Box component="span" sx={{ color: AP.faint, fontWeight: 400, fontSize: 12.5 }}>block {blockLabel(core)}</Box>
+                    {rows.length} table{rows.length === 1 ? '' : 's'} {showBase ? (rows.length === 1 ? 'differs from the base plan' : 'differ from the base plan') : (rows.length === 1 ? 'changes' : 'change')} at {two(core)}:00 <Box component="span" sx={{ color: AP.faint, fontWeight: 400, fontSize: 12.5 }}>block {blockLabel(core)}{showBase ? ` · minimum ${rep ? rep.baseLb : 0}` : ''}</Box>
                 </Typography>
-                <Typography sx={{ fontSize: 12, color: AP.faint, mb: 0.8 }}>“Keep” pins the table at its previous price for this block; the date is solved again around it.</Typography>
+                <Typography sx={{ fontSize: 12, color: AP.faint, mb: 0.8 }}>{showBase ? '“From” is the base plan, “To” the new plan. “Keep” holds the base price for this block and solves the date again.' : '“Keep” pins the table at its previous price for this block; the date is solved again around it.'}</Typography>
                 <Box sx={{ maxHeight: 300, overflow: 'auto', scrollbarWidth: 'thin' }}>
                     <Box component="table" sx={{ width: '100%', borderCollapse: 'collapse', '& td': { p: 0.5, borderBottom: `1px solid ${AP.lineSoft}`, fontSize: 13, color: AP.text, whiteSpace: 'nowrap' } }}>
                         <thead><tr>{sortHead('table', 'Table')}{sortHead('sub', 'Sub · zone')}{sortHead('from', 'From')}{sortHead('to', 'To')}{sortHead('step', 'Move', 'right')}<Box component="th" sx={{ borderBottom: `1px solid ${AP.lineSoft}` }} /></tr></thead>

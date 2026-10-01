@@ -7,7 +7,7 @@
 // order (07 → 11 → … → 05, and the previous date's 05 → 07).
 
 import { CORE_HOURS, dayTypeOf, prevCore, lastCore } from './core';
-import { targetsForDate, manualFor } from './config';
+import { targetsForDate, manualFor, manualExemptFor } from './config';
 import { fitToCount, fitToCaps, fitToFloors, foldToLadder } from './inputs';
 import { solveBlock, rulesFor, capsForSub, floorsForSub, diagnose, lowerBound, changesBetween, recentChanges, inScope } from './solver';
 import { getDaypartAssignments } from '../pricingStorage';
@@ -81,6 +81,13 @@ export function pickReferenceDate(dates, cfg, openByDate, anchor) {
     return best.first;
 }
 
+// Weights for a solve: with a base plan kept "as close as possible", a
+// difference from it costs `base` (above a change) instead of `stay`.
+function weightsOf(ctx) {
+    const W = ctx.cfg.weights;
+    return ctx.baseStrength === 'strong' ? { ...W, stay: W.base ?? 30000 } : W;
+}
+
 // ── One block ────────────────────────────────────────────────────────
 const valuesOf = (ctx, dt, core) => (ctx.valuesFor ? ctx.valuesFor(dt, core) : (ctx.valuesByDt[dt] || new Map())) || new Map();
 
@@ -90,34 +97,49 @@ function blockInputs(ctx, date, dt, core) {
     const tables = ctx.tables.filter((t) => open.has(t.key)).map((t) => ({ ...t, value: vals.get(t.key) || 0 }));
     const rules = rulesFor(ctx.cfg.rules, core);
     const crit = ctx.cfg.criteria || {};
+    // Hard locks: Planning pins (when kept) and manual prices (always; they win).
+    const pins = new Map(ctx.keepPins ? (((ctx.pinsByDate[date] || {})[core]) || new Map()) : new Map());
+    const exempt = new Map();
+    for (const [k, id] of manualFor(ctx.cfg, date, core)) if (open.has(k)) pins.set(k, id);
+    for (const [k, ex] of manualExemptFor(ctx.cfg, date, core)) if (open.has(k)) exempt.set(k, ex);
+    // Lock rules hold like pins, so the target mix makes room for their price.
+    for (const r of rules) {
+        if (r.type !== 'lock') continue;
+        for (const t of tables) {
+            if (pins.has(t.key) || !inScope(t, r.scope)) continue;
+            pins.set(t.key, r.tier);
+            if (r.exempt && r.exempt.length) exempt.set(t.key, r.exempt);
+        }
+    }
     const targets = {};
     for (const sub of Object.keys(ctx.ladders)) {
         const n = tables.filter((t) => t.sub === sub).length;
+        // Locked tables exempt from a pod maximum sit on top of what it allows.
+        const caps = capsForSub(rules, tables, sub);
+        for (const t of tables) {
+            if (t.sub !== sub || !exempt.has(t.key) || !caps.has(pins.get(t.key))) continue;
+            caps.set(pins.get(t.key), caps.get(pins.get(t.key)) + 1);
+        }
         targets[sub] = planTargets({
             stored: targetsForDate(ctx.cfg, date, dt, core, sub),
             seeded: ((ctx.seededByDt[dt] || {})[core] || {})[sub],
             openCount: n, ladder: ctx.ladders[sub],
-            caps: capsForSub(rules, tables, sub), floors: floorsForSub(rules, tables, sub),
+            caps, floors: floorsForSub(rules, tables, sub),
             overflow: crit.overflow || 'down', tierIndex: ctx.tierIndex,
         });
     }
-    // Hard locks: Planning pins (when kept) and manual prices (always; they win).
-    const pins = new Map(ctx.keepPins ? (((ctx.pinsByDate[date] || {})[core]) || new Map()) : new Map());
-    for (const [k, id] of manualFor(ctx.cfg, date, core)) if (open.has(k)) pins.set(k, id);
-    // Lock rules hold like pins, so the target mix makes room for their price.
-    for (const r of rules) if (r.type === 'lock') for (const t of tables) if (!pins.has(t.key) && inScope(t, r.scope)) pins.set(t.key, r.tier);
     const current = ctx.stayClose ? (((ctx.currentByDate[date] || {})[core]) || null) : null;
     const shares = new Map();
     const sh = ctx.sharesByDt[dt] || new Map();
     for (const t of tables) { const e = sh.get(`${t.key}|${core}`); if (e) shares.set(t.key, e); }
-    return { tables, rules, targets, pins, current, shares };
+    return { tables, rules, targets, pins, current, shares, exempt };
 }
 
 function runBlock(ctx, inp, { parent, dir, weights, scale, recentChanged, night = null }) {
     const cap = (ctx.cfg.criteria || {}).podChangeCap || {};
     const base = {
         tables: inp.tables, targets: inp.targets, ladders: ctx.ladders, tierIndex: ctx.tierIndex, prev: parent,
-        current: inp.current, shares: inp.shares, pins: inp.pins, rules: inp.rules, weights, recentChanged,
+        current: inp.current, shares: inp.shares, pins: inp.pins, rules: inp.rules, weights, recentChanged, exempt: inp.exempt,
         direction: dir || 'fwd', changeScale: scale, night, tierLabel: ctx.tierLabel,
     };
     let r = solveBlock(base);
@@ -153,7 +175,7 @@ export function solveReference(ctx, refDate) {
     const dt = dayTypeOf(refDate, ctx.cfg);
     const anchor = pickAnchor(CORE_HOURS, (ctx.cfg.criteria || {}).anchorCore ?? 21, ctx.openByDate[refDate]);
     const inp = blockInputs(ctx, refDate, dt, anchor);
-    return runBlock(ctx, inp, { parent: null, dir: null, weights: ctx.cfg.weights, scale: 1, recentChanged: null }).assign;
+    return runBlock(ctx, inp, { parent: null, dir: null, weights: weightsOf(ctx), scale: 1, recentChanged: null }).assign;
 }
 
 // ── One date ─────────────────────────────────────────────────────────
@@ -163,7 +185,7 @@ export function solveDate(ctx, date, opts) {
     const { ref = null, prevDateLast = null } = opts || {};
     const dt = dayTypeOf(date, ctx.cfg);
     const crit = ctx.cfg.criteria || {};
-    const W = ctx.cfg.weights;
+    const W = weightsOf(ctx);
     const holdN = crit.holdHours || 2;
     const mult = crit.changeMult || {};
     const anchor = pickAnchor(CORE_HOURS, crit.anchorCore ?? 21, ctx.openByDate[date]);
@@ -207,8 +229,20 @@ export function solveDate(ctx, date, opts) {
             ok: r.ok, notes: r.notes, problems: problemsOf(ctx, inp, r), targets: r.targets,
             changes: prev ? changesBetween(prev, r.assign) : [], lb,
             podOver: r.podOver || [],
+            // Against the base plan (the old version being adjusted), when there is one.
+            baseChanges: inp.current ? changesBetween(inp.current, r.assign) : [],
+            baseLb: inp.current ? lowerBound(inp.current, r.targets, inp.tables) : 0,
             from: `${prevCore(core) == null ? 'previous date ' : ''}${String(prevCore(core) ?? lastCore()).padStart(2, '0')}:00`,
         };
     });
     return { byCore, report, dayType: dt, anchor, alignDiffs };
+}
+
+// A saved version's prices at one core hour (the base plan to adjust).
+export function readVersionBlockMap(store, date, versionNumber, core) {
+    const out = new Map();
+    const v = ((((store.plans || {})[date] || {}).versions) || []).find((x) => x.versionNumber === versionNumber);
+    const a = (((v || {}).byDaypart || {})[`h_${core}`] || {}).assignments || {};
+    for (const [k, val] of Object.entries(a)) { const p = readPrice(val); if (p) out.set(k, p.base); }
+    return out;
 }
