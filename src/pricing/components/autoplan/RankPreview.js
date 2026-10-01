@@ -1,4 +1,4 @@
-// Ranking preview — one sub-segment's tables in rank order for a day type and
+// Ranking preview — one sub-segment × game type's tables in rank order for a day type and
 // core hour: each signal's value and percentile, the blended score, and the
 // price slot the rank alone would give (fewest changes and rules come first
 // in the real solve).
@@ -39,7 +39,7 @@ export default function RankPreview({ breakdown, subs, coreHours, basis, mixFor,
     return (
         <Box sx={{ mt: 1, p: 1, borderRadius: 1.5, border: `1px solid ${AP.line}`, bgcolor: 'rgba(255,255,255,0.025)' }}>
             <Stack direction="row" sx={{ gap: 0.6, flexWrap: 'wrap', alignItems: 'center', mb: 1 }}>
-                {sel(s, setSub, 'Preview sub-segment', subs.map((x) => [x, x]), 96)}
+                {sel(s, setSub, 'Preview sub-segment and game type', subs.map((x) => [x, String(x).replace('|', ' · ')]), 120)}
                 {sel(dt, setDt, 'Preview day type', DAY_TYPES.map((d) => [d.id, d.label]), 110)}
                 {basis === 'block'
                     ? sel(core, setCore, 'Preview core hour', coreHours.map((c) => [c, `${two(c)}:00`]), 90)

@@ -8,7 +8,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { fetchDailyData, fetchHourlyData, gametypeTableKey } from '../../../performance/utils/dataSource';
 import { fetchScheduleHours } from '../../utils/scheduleSource';
 import { CORE_HOURS, DAY_TYPES, addDays, blockHours, blockLabel, datesBetween, dayTypeOf, lastCore, nextMonthRange, normalizeCoreHours, setCoreHours } from '../../utils/autoplan/core';
-import { mergeAutoplan, withTargets, withManual, withManualExempt, withPrices, manualFor, manualExemptFor, isExempt, targetsFor, dateKey, clearManualDate, tablesScope } from '../../utils/autoplan/config';
+import { mergeAutoplan, withTargets, withManual, withManualExempt, withPrices, manualFor, manualExemptFor, isExempt, targetsFor, dateKey, clearManualDate, tablesScope, groupKey, groupSub } from '../../utils/autoplan/config';
 import {
     aggregateRows, allocate, baseLadders, blendFromAgg, effectiveLadders, fitToCaps, fitToFloors, foldToLadder, historyShares, laddersFrom,
     openByBlock, seedTargets, signalBreakdown, sourceWindow,
@@ -137,7 +137,11 @@ export default function useAutoPlan({ store, setStore, tiers, tables: floorTable
     const tiersAsc = useMemo(() => [...tiers].sort((a, b) => (a.min || 0) - (b.min || 0)), [tiers]);
     const tierIndex = useMemo(() => new Map(tiersAsc.map((t, i) => [t.id, i])), [tiersAsc]);
     const tierById = useMemo(() => new Map(tiersAsc.map((t) => [t.id, t])), [tiersAsc]);
-    const tables = useMemo(() => floorTables.map((t) => ({ key: t.key, sub: t.sub_segment || 'Other', zone: t.zone || t.pit || '', gametype: t.gametype })), [floorTables]);
+    // grp: the mix group (sub-segment × game type) whose targets the table fills.
+    const tables = useMemo(() => floorTables.map((t) => {
+        const sub = t.sub_segment || 'Other';
+        return { key: t.key, sub, zone: t.zone || t.pit || '', gametype: t.gametype, segment: t.segment || '', grp: groupKey(sub, t.gametype) };
+    }), [floorTables]);
     const tableByKey = useMemo(() => new Map(tables.map((t) => [t.key, t])), [tables]);
     const dates = useMemo(() => datesBetween(period.from, period.to), [period.from, period.to]);
     const dtOf = useCallback((d) => dayTypeOf(d, cfg), [cfg]);
@@ -150,7 +154,8 @@ export default function useAutoPlan({ store, setStore, tiers, tables: floorTable
         const byBlock = crit.rankBasis === 'block';
         const rankFeed = byBlock ? rows.hourly : rows.daily;
         const rankWin = sourceWindow(crit.rankSource, { defaultDays: crit.rankDays, before: before(rankFeed) });
-        const subOf = new Map(tables.map((t) => [t.key, t.sub]));
+        // Rank percentiles within the mix group: baccarat tables rank against baccarat.
+        const subOf = new Map(tables.map((t) => [t.key, t.grp]));
         const sharesByDt = {};
         for (const d of DAY_TYPES) {
             sharesByDt[d.id] = historyShares(rows.hourly, {
@@ -190,6 +195,11 @@ export default function useAutoPlan({ store, setStore, tiers, tables: floorTable
     const ladders = useMemo(() => (history ? effectiveLadders(history.ladders, cfg.prices, tiersAsc, SEGMENT_PRICES) : {}),
         [history, pricesKey, tiersAsc]); // eslint-disable-line react-hooks/exhaustive-deps
 
+    // Mix groups (sub-segment × game type): each has its own target mix and
+    // plans with its sub-segment's price list.
+    const groups = useMemo(() => [...new Set(tables.map((t) => t.grp))].sort(), [tables]);
+    const gLadders = useMemo(() => Object.fromEntries(groups.filter((g) => ladders[groupSub(g)]).map((g) => [g, ladders[groupSub(g)]])), [groups, ladders]);
+
     const openByDate = useMemo(() => {
         const out = {};
         for (const d of dates) out[d] = openByBlock(schedule.byDate[d] || null, tables, crit.openRule).byCore;
@@ -197,17 +207,17 @@ export default function useAutoPlan({ store, setStore, tiers, tables: floorTable
     }, [dates, schedule.byDate, tables, crit.openRule, coreKey]); // eslint-disable-line react-hooks/exhaustive-deps
     const missingSchedule = dates.filter((d) => !schedule.byDate[d]).length;
 
-    // Open tables per core × sub-segment: one date, or the day type's average.
+    // Open tables per core × mix group: one date, or the day type's average.
     const subs = useMemo(() => [...new Set(tables.map((t) => t.sub))], [tables]);
     const countsFor = useCallback((date) => {
         const out = {};
         for (const core of CORE_HOURS) {
             out[core] = {};
             const open = openByDate[date] ? openByDate[date].get(core) : null;
-            for (const sub of subs) out[core][sub] = tables.filter((t) => t.sub === sub && (!open || open.has(t.key))).length;
+            for (const g of groups) out[core][g] = tables.filter((t) => t.grp === g && (!open || open.has(t.key))).length;
         }
         return out;
-    }, [openByDate, subs, tables, coreKey]); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [openByDate, groups, tables, coreKey]); // eslint-disable-line react-hooks/exhaustive-deps
     const refOpen = useMemo(() => {
         const out = {};
         for (const dt of DAY_TYPES.map((x) => x.id)) {
@@ -216,14 +226,14 @@ export default function useAutoPlan({ store, setStore, tiers, tables: floorTable
             const per = ds.map(countsFor);
             for (const core of CORE_HOURS) {
                 out[dt][core] = {};
-                for (const sub of subs) {
-                    out[dt][core][sub] = per.length ? Math.round(per.reduce((a, c) => a + c[core][sub], 0) / per.length) : tables.filter((t) => t.sub === sub).length;
+                for (const g of groups) {
+                    out[dt][core][g] = per.length ? Math.round(per.reduce((a, c) => a + c[core][g], 0) / per.length) : tables.filter((t) => t.grp === g).length;
                 }
             }
         }
         return out;
-    }, [dates, dtOf, countsFor, subs, tables, coreKey]); // eslint-disable-line react-hooks/exhaustive-deps
-    // Scope = a day type id or 'd:YYYY-MM-DD'.
+    }, [dates, dtOf, countsFor, groups, tables, coreKey]); // eslint-disable-line react-hooks/exhaustive-deps
+    // Scope = a day type id or 'd:YYYY-MM-DD'; sub = a mix group key.
     const openCountFor = useCallback((scope, core, sub) => {
         if (String(scope).startsWith('d:')) return (countsFor(scope.slice(2))[core] || {})[sub] || 0;
         return ((refOpen[scope] || {})[core] || {})[sub] || 0;
@@ -236,13 +246,13 @@ export default function useAutoPlan({ store, setStore, tiers, tables: floorTable
     }, [dates, dtOf, openByDate, tables]);
     const capsFor = useCallback((scope, core, sub) => capsForSub(rulesFor(cfg.rules, core), scopeTables(scope, core), sub), [cfg.rules, scopeTables]);
     const floorsFor = useCallback((scope, core, sub) => floorsForSub(rulesFor(cfg.rules, core), scopeTables(scope, core), sub), [cfg.rules, scopeTables]);
-    // Fit a mix to a scope's open tables, pod maximums and pod minimums.
+    // Fit a group's mix to a scope's open tables, pod maximums and pod minimums.
     const fitMix = useCallback((scope, core, sub, map) => {
-        const lad = ladders[sub] || [];
+        const lad = gLadders[sub] || [];
         const a = allocate(foldToLadder(map || {}, lad, tierIndex), openCountFor(scope, core, sub), lad);
         const b = fitToCaps(a, capsFor(scope, core, sub), lad, crit.overflow).map;
         return fitToFloors(b, floorsFor(scope, core, sub), lad).map;
-    }, [ladders, tierIndex, openCountFor, capsFor, floorsFor, crit.overflow]);
+    }, [gLadders, tierIndex, openCountFor, capsFor, floorsFor, crit.overflow]);
 
     const seeded = useMemo(() => {
         if (!history) return {};
@@ -250,15 +260,16 @@ export default function useAutoPlan({ store, setStore, tiers, tables: floorTable
         for (const dt of DAY_TYPES.map((x) => x.id)) {
             const d = dates.find((x) => dtOf(x) === dt);
             const openByCore = d ? openByDate[d] : new Map(CORE_HOURS.map((c) => [c, new Set(tables.map((t) => t.key))]));
-            const raw = seedTargets({ tables, openByCore, shares: history.sharesByDt[dt], ladders: history.ladders });
+            const histLad = Object.fromEntries(groups.map((g) => [g, history.ladders[groupSub(g)] || []]));
+            const raw = seedTargets({ tables, openByCore, shares: history.sharesByDt[dt], ladders: histLad });
             out[dt] = {};
             for (const core of CORE_HOURS) {
                 out[dt][core] = {};
-                for (const sub of Object.keys(ladders)) out[dt][core][sub] = fitMix(dt, core, sub, raw[core][sub] || {});
+                for (const g of Object.keys(gLadders)) out[dt][core][g] = fitMix(dt, core, g, raw[core][g] || {});
             }
         }
         return out;
-    }, [history, ladders, dates, dtOf, openByDate, tables, fitMix, coreKey]); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [history, gLadders, groups, dates, dtOf, openByDate, tables, fitMix, coreKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
     // The mix a scope shows: its own, else (for a date) its day type's, else history.
     const mixFor = useCallback((scope, core, sub) => {
@@ -302,10 +313,10 @@ export default function useAutoPlan({ store, setStore, tiers, tables: floorTable
         }
         return {
             cfg: cfgArg, tables, tiersAsc, tierIndex, tierLabel: (id) => tierLabel(tierById.get(id)),
-            ladders, sharesByDt: history.sharesByDt, valuesFor: history.valuesFor, valuesByDt: {}, seededByDt: seeded,
+            ladders: gLadders, sharesByDt: history.sharesByDt, valuesFor: history.valuesFor, valuesByDt: {}, seededByDt: seeded,
             openByDate, currentByDate, pinsByDate, keepPins, stayClose, baseStrength: base.strength,
         };
-    }, [cfg, dates, store, tables, tiersAsc, tierIndex, tierById, history, ladders, seeded, openByDate, keepPins, stayClose, base, coreKey]); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [cfg, dates, store, tables, tiersAsc, tierIndex, tierById, history, gLadders, seeded, openByDate, keepPins, stayClose, base, coreKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
     // What a solve depends on besides the data: when it differs from the
     // draft's, the draft is out of date ("Solve again").
@@ -508,25 +519,25 @@ export default function useAutoPlan({ store, setStore, tiers, tables: floorTable
 
     const changeSheet = useCallback(() => {
         if (!draft) return '';
-        const lines = ['date,day_type,block,table,sub_segment,zone,from,to'];
+        const lines = ['date,day_type,block,table,sub_segment,game_type,zone,from,to'];
         for (const d of dates) {
             const rep = draft.reports[d];
             if (!rep) continue;
             for (const c of CORE_HOURS) for (const ch of rep[c].changes) {
                 const t = tableByKey.get(ch.key) || {};
-                lines.push([d, dtOf(d), blockLabel(c), ch.key.replace('|', ''), t.sub || '', t.zone || '', tierLabel(tierById.get(ch.from)), tierLabel(tierById.get(ch.to))].map((v) => `"${String(v).replace(/"/g, '""')}"`).join(','));
+                lines.push([d, dtOf(d), blockLabel(c), ch.key.replace('|', ''), t.sub || '', t.gametype || '', t.zone || '', tierLabel(tierById.get(ch.from)), tierLabel(tierById.get(ch.to))].map((v) => `"${String(v).replace(/"/g, '""')}"`).join(','));
             }
         }
         return lines.join('\n');
     }, [draft, dates, tableByKey, dtOf, tierById]);
 
-    // Top-percent rank of a table within its sub-segment at a core hour.
+    // Top-percent rank of a table within its mix group at a core hour.
     const rankPctOf = useCallback((date, key, core = crit.anchorCore) => {
         if (!history) return 50;
         const vals = history.valuesFor(dtOf(date), core);
         const t = tableByKey.get(key);
         if (!t) return 50;
-        const peers = tables.filter((x) => x.sub === t.sub).map((x) => vals.get(x.key) || 0).sort((a, b) => b - a);
+        const peers = tables.filter((x) => x.grp === t.grp).map((x) => vals.get(x.key) || 0).sort((a, b) => b - a);
         const i = peers.findIndex((x) => x <= (vals.get(key) || 0));
         return Math.max(1, Math.round(((i < 0 ? peers.length : i + 1) / Math.max(1, peers.length)) * 100));
     }, [history, dtOf, tableByKey, tables, crit.anchorCore]);
@@ -569,7 +580,7 @@ export default function useAutoPlan({ store, setStore, tiers, tables: floorTable
         cfg, setCfg, setCoreHours: setCoreHoursCfg, period, setPeriod, keepPins, setKeepPins, base, setBase, baseVersions, baseFound,
         stale: !!draft && draft.key !== solveKey,
         ready: !!history && dates.length > 0, loading: active && !rows, history, dates, dtOf, dateCounts,
-        tables, tableByKey, tiersAsc, tierIndex, tierById, ladders, historyLadders: baseLad, priceSourceOf, subs,
+        tables, tableByKey, tiersAsc, tierIndex, tierById, ladders, historyLadders: baseLad, priceSourceOf, subs, groups, gLadders,
         refOpen, openCountFor, seeded, mixFor, capsFor, floorsFor, fitMix, seedDayType, openByDate, missingSchedule, hasSchedule: (d) => !!schedule.byDate[d],
         refDate, anchorFor: (d) => pickAnchor(CORE_HOURS, crit.anchorCore, openByDate[d]),
         draft, solving, progress, solve: () => solveDates(null), keepAndResolve, setManual, setManualExempt, clearManual, addTableRule, discard, apply, overlay, closedCheck,

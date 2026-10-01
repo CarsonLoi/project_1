@@ -178,7 +178,7 @@ function SolveOrderStrip({ coreHours, anchor }) {
 
 export default function CriteriaPanel({
     cfg, onCfg, onCoreHours, ladders, tierById, histWindow, rankWindow, levels, stale, hasDraft, onSolve, solving,
-    refDate, refLabel, breakdown, mixFor, subs, baseStrength = 'tie',
+    refDate, refLabel, breakdown, mixFor, subs, rankLadders = null, baseStrength = 'tie',
 }) {
     const w = cfg.weights, c = cfg.criteria, core = cfg.coreHours;
     const [preview, setPreview] = useState(false);
@@ -399,7 +399,7 @@ export default function CriteriaPanel({
                     label="Same day type only" sub="A Saturday plan ranks by Saturdays. Off = every day." />
                 <Box>
                     <Button size="small" sx={ghostSx} aria-expanded={preview} onClick={() => setPreview((p) => !p)}>{preview ? 'Hide ranking preview' : 'Show ranking preview'}</Button>
-                    {preview ? <RankPreview breakdown={breakdown} subs={subs} coreHours={core} basis={c.rankBasis} mixFor={mixFor} ladders={ladders} tierById={tierById} mix={mix} defaultCore={anchor ?? core[0]} /> : null}
+                    {preview ? <RankPreview breakdown={breakdown} subs={subs} coreHours={core} basis={c.rankBasis} mixFor={mixFor} ladders={rankLadders || ladders} tierById={tierById} mix={mix} defaultCore={anchor ?? core[0]} /> : null}
                 </Box>
                 <Typography sx={help}>
                     With a base plan in the toolbar, keeping its prices ({w.stay.toLocaleString()} pts as a tie-break) outweighs the rank ({w.rank.toLocaleString()} pts a level). Set Base plan to “No base plan” to re-rank from scratch.

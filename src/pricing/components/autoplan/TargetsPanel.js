@@ -1,10 +1,11 @@
-// Targets — tables per price for each core hour, per sub-segment, entered by
-// day type or for a specific date (a date's own mix overrides its day type).
-// Cells show the saved target, or the inherited one (italic: the day type's
-// for a date, else history) until edited. One Excel paste can fill every
-// sub-segment, price and hour — and several day types or dates — at once;
-// "Copy as Excel" gives the same layout to edit and paste back.
-// Each sub-segment's price list starts from history and can be edited.
+// Targets — tables per price for each core hour, per sub-segment × game type
+// (a game type's tables only fill its own targets), entered by day type or
+// for a specific date (a date's own mix overrides its day type). Cells show
+// the saved target, or the inherited one (italic: the day type's for a date,
+// else history) until edited. One Excel paste can fill every sub-segment,
+// game type, price and hour — and several day types or dates — at once;
+// "Copy as Excel" gives the same layout to edit and paste back. Each
+// sub-segment's price list (shared by its game types) can be edited.
 
 import React, { useCallback, useState } from 'react';
 import { Box, Button, ButtonBase, IconButton, Menu, MenuItem, Stack, Tooltip, Typography } from '@mui/material';
@@ -18,7 +19,7 @@ import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import ContentPasteIcon from '@mui/icons-material/ContentPaste';
 import TableViewIcon from '@mui/icons-material/TableView';
 import { CORE_HOURS, DAY_TYPES, DOW_LABELS, blockLabel, dowOf } from '../../utils/autoplan/core';
-import { targetsFor, withTargets, withPrices, removePrice, clearPrices, clearDateTargets } from '../../utils/autoplan/config';
+import { targetsFor, withTargets, withPrices, removePrice, clearPrices, clearDateTargets, groupSub, groupGame } from '../../utils/autoplan/config';
 import { parseTargetsPaste, formatTargetsTsv, parseMatrix } from '../../utils/autoplan/paste';
 import PasteTargetsDialog from './PasteTargetsDialog';
 import { SEGMENT_PRICES } from '../../constants/segmentPrices';
@@ -32,9 +33,15 @@ const chipSx = (on) => ({
 });
 
 export default function TargetsPanel({
-    cfg, onCfg, scope, onScope, dates, dtOf, sub, onSub, subs, ladders, historyLadders, tiersAsc, tierIndex, tierById,
+    cfg, onCfg, scope, onScope, dates, dtOf, group, onGroup, groups, ladders, historyLadders, tiersAsc, tierIndex, tierById,
     mixFor, openCountFor, fitMix, onSeed, priceSourceOf,
 }) {
+    // groups: [{ key, sub, game, segment }] in display order; group: the key shown.
+    const sub = group ? groupSub(group) : '';
+    const game = group ? groupGame(group) : '';
+    const subs = [...new Set(groups.map((g) => g.sub))];
+    const gamesOf = (s) => groups.filter((g) => g.sub === s);
+    const groupName = `${sub} · ${game}`;
     const [col, setCol] = useState(null);
     const [copyAnchor, setCopyAnchor] = useState(null);
     const [xlAnchor, setXlAnchor] = useState(null);
@@ -65,45 +72,45 @@ export default function TargetsPanel({
             + (r.moved ? ` ${r.moved} saved tables moved to ${tierLabel(tierById.get(r.to))}.` : '')
             + (rules ? ` ${rules} ${rules === 1 ? 'rule uses' : 'rules use'} ${name}; check the Rules tab.` : ''));
     };
-    const shownFor = (sc, core, s) => mixFor(sc, core, s).map || {};
-    const shown = (core) => shownFor(scope, core, sub);
-    const inherited = (core) => mixFor(scope, core, sub).from;
-    const openAt = (core) => openCountFor(scope, core, sub);
+    const shownFor = (sc, core, g) => mixFor(sc, core, g).map || {};
+    const shown = (core) => shownFor(scope, core, group);
+    const inherited = (core) => mixFor(scope, core, group).from;
+    const openAt = (core) => openCountFor(scope, core, group);
     const put = (next) => onCfg(next);
 
-    const setCell = (core, id, v) => put(withTargets(cfg, scope, core, sub, { ...shown(core), [id]: Math.max(0, parseInt(v, 10) || 0) }));
+    const setCell = (core, id, v) => put(withTargets(cfg, scope, core, group, { ...shown(core), [id]: Math.max(0, parseInt(v, 10) || 0) }));
     const shift = (core, dir) => {
         const m = shown(core), out = {};
         ladder.forEach((id, i) => { const to = ladder[Math.min(ladder.length - 1, Math.max(0, i + dir))]; out[to] = (out[to] || 0) + (m[id] || 0); });
-        put(withTargets(cfg, scope, core, sub, out));
+        put(withTargets(cfg, scope, core, group, out));
     };
-    const fit = (core, next = cfg) => withTargets(next, scope, core, sub, fitMix(scope, core, sub, shown(core)));
+    const fit = (core, next = cfg) => withTargets(next, scope, core, group, fitMix(scope, core, group, shown(core)));
     const copyToAll = (core) => {
         let next = cfg;
         const src = shown(core);
-        for (const c of CORE_HOURS) if (c !== core) next = withTargets(next, scope, c, sub, fitMix(scope, c, sub, src));
+        for (const c of CORE_HOURS) if (c !== core) next = withTargets(next, scope, c, group, fitMix(scope, c, group, src));
         put(next);
     };
     const copyFrom = (from) => {
         let next = cfg;
-        for (const s of subs) for (const c of CORE_HOURS) next = withTargets(next, scope, c, s, fitMix(scope, c, s, shownFor(from, c, s)));
+        for (const { key: g } of groups) for (const c of CORE_HOURS) next = withTargets(next, scope, c, g, fitMix(scope, c, g, shownFor(from, c, g)));
         withUndo(next, `${scopeName} now uses ${scopeLabel(from)}'s mix, fitted to its open tables.`);
     };
     // Paste a prices × core-hours block from Excel in one go. A block that is
     // exactly prices × hours fills the whole grid; $ labels and hour headers
     // map by name (new prices join the list); other blocks fill from the cell.
-    // A whole sheet (with a Sub-segment column) opens the full paste dialog.
+    // A whole sheet (with Sub segment / Game type columns) opens the full paste dialog.
     const onPaste = (e, core, id) => {
         const text = e.clipboardData.getData('text');
         if (!/[\t\n]/.test(text)) return;
         e.preventDefault();
-        if (/sub|segment/i.test(text)) { setPasteText(text); setPasteOpen(true); return; }
+        if (/sub|segment|game/i.test(text)) { setPasteText(text); setPasteOpen(true); return; }
         const r = parseMatrix(text, { ladderDesc: [...ladder].reverse(), coreHours: CORE_HOURS, tiers: tiersAsc, anchor: { tierId: id, core } });
         if (!r.cells.length) { setUndo(null); setNote(r.errors[0] ? `Nothing pasted: ${r.errors[0]}` : 'Nothing pasted.'); return; }
         let next = r.newPrices.length ? withPrices(cfg, sub, [...ladder, ...r.newPrices], tiersAsc) : cfg;
         const byCore = new Map();
         for (const c of r.cells) { if (!byCore.has(c.core)) byCore.set(c.core, {}); byCore.get(c.core)[c.tierId] = c.n; }
-        for (const [c, vals] of byCore) next = withTargets(next, scope, c, sub, { ...(targetsFor(next, scope, c, sub) || shown(c)), ...vals });
+        for (const [c, vals] of byCore) next = withTargets(next, scope, c, group, { ...(targetsFor(next, scope, c, group) || shown(c)), ...vals });
         const where = r.mode === 'full' ? 'the whole grid' : r.mode === 'labeled' ? 'rows matched by price' : `from ${tierLabel(tierById.get(id))} at ${two(core)}:00`;
         withUndo(next, `Pasted ${r.rows} × ${r.cols} into ${where} (${r.cells.length} cells)`
             + (r.newPrices.length ? `; added ${r.newPrices.map((x) => tierLabel(tierById.get(x))).join(', ')} to ${sub}` : '')
@@ -112,36 +119,43 @@ export default function TargetsPanel({
 
     // ── Whole-sheet paste / copy ────────────────────────────────────────
     const parse = useCallback((text) => {
-        const r = parseTargetsPaste(text, { subs, tiers: tiersAsc, coreHours: CORE_HOURS, dayTypes: DAY_TYPES, dates, scope, ladders });
+        const r = parseTargetsPaste(text, { groups, tiers: tiersAsc, coreHours: CORE_HOURS, dayTypes: DAY_TYPES, dates, scope, ladders, dowMap: cfg.dowMap });
         return { ...r, newPrices: r.newPrices.map((p) => ({ ...p, label: tierLabel(tierById.get(p.tierId)) })) };
-    }, [subs, tiersAsc, dates, scope, ladders, tierById]);
+    }, [groups, tiersAsc, dates, scope, ladders, tierById, cfg.dowMap]);
     const applyPaste = (r) => {
         let next = cfg;
         for (const p of r.newPrices) next = withPrices(next, p.sub, [...((next.prices || {})[p.sub] || ladders[p.sub] || []), p.tierId], tiersAsc);
-        const groups = new Map();
+        const byKey = new Map();
         for (const c of r.cells) {
-            const k = `${c.scope}|${c.sub}|${c.core}`;
-            if (!groups.has(k)) groups.set(k, { ...c, cells: {} });
-            groups.get(k).cells[c.tierId] = c.n;
+            const k = `${c.scope}|${c.group}|${c.core}`;
+            if (!byKey.has(k)) byKey.set(k, { ...c, cells: {} });
+            byKey.get(k).cells[c.tierId] = c.n;
         }
-        for (const g of groups.values()) {
-            const base = targetsFor(next, g.scope, g.core, g.sub) || shownFor(g.scope, g.core, g.sub);
-            next = withTargets(next, g.scope, g.core, g.sub, { ...base, ...g.cells });
+        for (const g of byKey.values()) {
+            const base = targetsFor(next, g.scope, g.core, g.group) || shownFor(g.scope, g.core, g.group);
+            next = withTargets(next, g.scope, g.core, g.group, { ...base, ...g.cells });
         }
         withUndo(next, `Filled ${r.cells.length} cells from Excel${r.newPrices.length ? ` and added ${r.newPrices.length} price${r.newPrices.length === 1 ? '' : 's'}` : ''}. Check the Total / open row.`);
     };
-    const tsv = (scopes, onlySub = null) => formatTargetsTsv({
-        scopes, subs: onlySub ? [onlySub] : subs, coreHours: CORE_HOURS, ladders, tierById,
-        valueOf: (s, sb, id, c) => shownFor(s, c, sb)[id] || 0,
+    const tsv = (scopes, onlyGroup = null) => formatTargetsTsv({
+        scopes, groups: onlyGroup ? groups.filter((g) => g.key === onlyGroup) : groups, coreHours: CORE_HOURS, ladders, tierById,
+        valueOf: (s, g, id, c) => shownFor(s, c, g)[id] || 0,
     });
     const copy = async (scopes) => {
         const text = tsv(scopes);
         try { await navigator.clipboard.writeText(text); setNote(`Copied ${text.split('\n').length - 1} rows. Paste them into Excel, edit, then use Paste from Excel.`); } catch (e) { setNote('Copy was blocked by the browser. Allow clipboard access and try again.'); }
         setUndo(null);
     };
-    const example = tsv([{ id: scope, label: scopeLabel(scope) }], sub || subs[0]).split('\n').slice(0, 3).join('\n');
+    const example = tsv([{ id: scope, label: isDate ? date : scopeLabel(scope) }], group || (groups[0] || {}).key).split('\n').slice(0, 3).join('\n');
 
-    const ok = (s) => CORE_HOURS.every((c) => sum(shownFor(scope, c, s)) === openCountFor(scope, c, s));
+    const ok = (g) => CORE_HOURS.every((c) => sum(shownFor(scope, c, g)) === openCountFor(scope, c, g));
+    const subOk = (s) => gamesOf(s).every((g) => ok(g.key));
+    const pickSub = (s) => {
+        const same = gamesOf(s).find((g) => g.game === game);
+        onGroup((same || gamesOf(s)[0] || {}).key || null); setCol(null); setUndo(null);
+    };
+    const dot = (good) => <Box component="span" aria-hidden="true" sx={{ width: 7, height: 7, borderRadius: '50%', bgcolor: good ? AP.ok : AP.bad }} />;
+    const srOnly = { position: 'absolute', width: 1, height: 1, overflow: 'hidden', clip: 'rect(0 0 0 0)' };
 
     return (
         <Stack spacing={1.2}>
@@ -180,24 +194,40 @@ export default function TargetsPanel({
                 )}
                 <Stack direction="row" sx={{ flexWrap: 'wrap', gap: 0.6 }} role="group" aria-label="Sub-segment">
                     {subs.map((s) => (
-                        <ButtonBase key={s} onClick={() => { onSub(s); setCol(null); setUndo(null); }} aria-pressed={sub === s}
+                        <ButtonBase key={s} onClick={() => pickSub(s)} aria-pressed={sub === s}
                             sx={{ px: 1.2, py: 0.45, borderRadius: 4, fontWeight: 800, fontSize: 12.5, gap: 0.6, border: `1px solid ${sub === s ? AP.accent : AP.lineSoft}`, color: sub === s ? AP.accent : AP.text, '&.Mui-focusVisible': { outline: `2px solid ${AP.accent}`, outlineOffset: 2 } }}>
-                            <Box component="span" aria-hidden="true" sx={{ width: 7, height: 7, borderRadius: '50%', bgcolor: ok(s) ? AP.ok : AP.bad }} />
+                            {dot(subOk(s))}
                             {s}
-                            <Box component="span" sx={{ position: 'absolute', width: 1, height: 1, overflow: 'hidden', clip: 'rect(0 0 0 0)' }}>{ok(s) ? ' totals match' : ' totals need fitting'}</Box>
+                            <Box component="span" sx={srOnly}>{subOk(s) ? ' totals match' : ' totals need fitting'}</Box>
                         </ButtonBase>
                     ))}
                 </Stack>
+                {sub ? (
+                    <Stack direction="row" sx={{ flexWrap: 'wrap', alignItems: 'center', gap: 0.5, mt: 0.8, pl: 1, borderLeft: `2px solid ${AP.lineSoft}` }} role="group" aria-label={`${sub} game type`}>
+                        <Typography sx={{ ...labelSx, fontSize: 10.5, mr: 0.4 }}>Game type</Typography>
+                        {gamesOf(sub).map((g) => {
+                            const on = g.key === group;
+                            return (
+                                <ButtonBase key={g.key} onClick={() => { onGroup(g.key); setCol(null); setUndo(null); }} aria-pressed={on}
+                                    sx={{ px: 1, py: 0.35, borderRadius: 1.2, fontWeight: 800, fontSize: 12.5, gap: 0.6, border: `1px solid ${on ? AP.accent : AP.lineSoft}`, bgcolor: on ? 'rgba(122,223,255,0.12)' : 'transparent', color: on ? AP.accent : AP.text, '&.Mui-focusVisible': { outline: `2px solid ${AP.accent}`, outlineOffset: 2 } }}>
+                                    {dot(ok(g.key))}
+                                    {g.game}
+                                    <Box component="span" sx={srOnly}>{ok(g.key) ? ' totals match' : ' totals need fitting'}</Box>
+                                </ButtonBase>
+                            );
+                        })}
+                    </Stack>
+                ) : null}
             </Box>
 
-            {!sub ? (
+            {!group ? (
                 <Box sx={panelSx} role="status">
                     <Typography sx={{ fontSize: 13, color: AP.faint, fontStyle: 'italic' }}>Loading price history. The targets appear once it's in.</Typography>
                 </Box>
             ) : (
             <Box sx={panelSx}>
                 <Stack direction="row" sx={{ alignItems: 'baseline', gap: 1, mb: 1 }}>
-                    <Typography sx={{ fontSize: 15, fontWeight: 800, color: '#fff' }}>{scopeName}</Typography>
+                    <Typography sx={{ fontSize: 15, fontWeight: 800, color: '#fff' }}>{groupName} <Box component="span" sx={{ color: AP.muted, fontWeight: 700 }}>· {scopeName}</Box></Typography>
                     <Typography sx={{ fontSize: 12.5, color: isDate ? (ownDate ? AP.warn : AP.faint) : AP.faint }}>
                         {isDate ? (ownDate ? 'own mix for this date' : `uses the ${DT_LABEL[dt]} mix until you edit it`) : 'day type mix'}
                     </Typography>
@@ -206,7 +236,7 @@ export default function TargetsPanel({
                     <Button sx={ghostSx} startIcon={<ContentPasteIcon sx={{ fontSize: 16 }} />} onClick={() => setPasteOpen(true)}>Paste from Excel</Button>
                     <Button sx={ghostSx} startIcon={<TableViewIcon sx={{ fontSize: 16 }} />} onClick={(e) => setXlAnchor(e.currentTarget)} aria-haspopup="menu">Copy as Excel</Button>
                     <Menu anchorEl={xlAnchor} open={!!xlAnchor} onClose={() => setXlAnchor(null)} slotProps={{ paper: { sx: { bgcolor: AP.pop, color: AP.text, border: `1px solid ${AP.line}` } } }}>
-                        <MenuItem onClick={() => { copy([{ id: scope, label: scopeLabel(scope) }]); setXlAnchor(null); }}>{scopeName}, every sub-segment</MenuItem>
+                        <MenuItem onClick={() => { copy([{ id: scope, label: scopeLabel(scope) }]); setXlAnchor(null); }}>{scopeName}, every sub-segment and game type</MenuItem>
                         <MenuItem onClick={() => { copy(DAY_TYPES.map((d) => ({ id: d.id, label: d.label }))); setXlAnchor(null); }}>All four day types</MenuItem>
                     </Menu>
                     {isDate ? (
@@ -217,12 +247,12 @@ export default function TargetsPanel({
                     <Button sx={ghostSx} startIcon={<ContentCopyIcon sx={{ fontSize: 16 }} />} onClick={(e) => setCopyAnchor(e.currentTarget)}>Copy from…</Button>
                     <Menu anchorEl={copyAnchor} open={!!copyAnchor} onClose={() => setCopyAnchor(null)} slotProps={{ paper: { sx: { bgcolor: AP.pop, color: AP.text, border: `1px solid ${AP.line}` } } }}>
                         {DAY_TYPES.filter((d) => d.id !== scope).map((d) => (
-                            <MenuItem key={d.id} onClick={() => { copyFrom(d.id); setCopyAnchor(null); }}>{d.label} (every sub-segment, fitted)</MenuItem>
+                            <MenuItem key={d.id} onClick={() => { copyFrom(d.id); setCopyAnchor(null); }}>{d.label} (every game type, fitted)</MenuItem>
                         ))}
                     </Menu>
                 </Stack>
                 <Stack direction="row" sx={{ alignItems: 'center', flexWrap: 'wrap', gap: 0.8, mb: 1 }}>
-                    <Typography sx={{ ...labelSx, fontSize: 11 }}>{sub} prices</Typography>
+                    <Typography sx={{ ...labelSx, fontSize: 11 }}>{sub} prices · every game type</Typography>
                     <Typography sx={{ fontSize: 12.5, color: edited ? AP.warn : AP.faint }}>
                         {edited ? 'edited here' : source === 'config' ? 'from the price config' : 'from history'} · {ladder.length} price{ladder.length === 1 ? '' : 's'}
                     </Typography>
@@ -256,10 +286,10 @@ export default function TargetsPanel({
                     <Box sx={{ mb: 1, p: 0.8, borderRadius: 1.5, border: `1px dashed ${AP.line}`, bgcolor: 'rgba(122,223,255,0.04)' }}>
                         <Typography sx={{ fontSize: 12.5, color: AP.text, display: 'flex', alignItems: 'center', gap: 0.8 }}>
                             <ContentPasteIcon sx={{ fontSize: 16, color: AP.accent }} />
-                            Copy the prices × hours block in Excel, click any cell below and press Ctrl+V: the whole block fills at once.
+                            Copy {groupName}'s prices × hours block in Excel, click any cell below and press Ctrl+V: the whole block fills at once.
                         </Typography>
                         <Typography sx={{ fontSize: 11.5, color: AP.faint, mt: 0.3, pl: 3 }}>
-                            Include the $ price column and the hour row to match by name (new prices are added). Click an hour's heading for column actions.
+                            Include the $ price column and the hour row to match by name (new prices are added). A whole sheet with Sub segment and Game type columns fills every game type. Click an hour's heading for column actions.
                         </Typography>
                     </Box>
                 )}
@@ -304,7 +334,7 @@ export default function TargetsPanel({
                                             return (
                                                 <td key={c}>
                                                     <Box component="input" type="number" min={0} value={v}
-                                                        aria-label={`${sub} ${two(c)}:00 ${tierLabel(t)} tables`}
+                                                        aria-label={`${sub} ${game} ${two(c)}:00 ${tierLabel(t)} tables`}
                                                         title={from === 'own' ? undefined : `From ${from === 'history' ? 'history' : DT_LABEL[from]}`}
                                                         onChange={(e) => setCell(c, id, e.target.value)}
                                                         onPaste={(e) => onPaste(e, c, id)}

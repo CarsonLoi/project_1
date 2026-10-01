@@ -1,5 +1,5 @@
 // Paste from Excel — one paste fills a whole target mix: every sub-segment,
-// price and core hour, and optionally several day types or dates at once.
+// game type, price and core hour, and optionally several day types or dates at once.
 // Shows what will be filled and what can't be read before anything is saved.
 
 import React, { useEffect, useMemo, useState } from 'react';
@@ -12,7 +12,7 @@ export default function PasteTargetsDialog({ open, onClose, parse, onApply, scop
     useEffect(() => { if (open) setText(initialText || ''); }, [open, initialText]);
     const r = useMemo(() => (text.trim() ? parse(text) : null), [text, parse]);
     const scopes = r ? [...new Set(r.cells.map((c) => c.scope))] : [];
-    const subs = r ? [...new Set(r.cells.map((c) => c.sub))] : [];
+    const groups = r ? [...new Set(r.cells.map((c) => c.group))] : [];
     const close = () => { setText(''); onClose(); };
     return (
         <Dialog open={open} onClose={close} maxWidth="md" fullWidth
@@ -22,7 +22,7 @@ export default function PasteTargetsDialog({ open, onClose, parse, onApply, scop
             </DialogTitle>
             <DialogContent>
                 <Typography sx={{ fontSize: 13, color: AP.muted, mb: 1 }}>
-                    Copy the cells in Excel, including the header row, and paste them below. Rows without a Day type or Date column fill {scopeName}.
+                    Copy the cells in Excel, including the header row (Date or Day of week, Segment, Sub segment, Game type, Price, then the core hours), and paste them below. Without a Date or Day of week column, rows fill {scopeName}.
                 </Typography>
                 <Box component="pre" sx={{ m: 0, mb: 1, p: 1, borderRadius: 1, bgcolor: 'rgba(255,255,255,0.04)', border: `1px solid ${AP.lineSoft}`, fontSize: 12, color: AP.faint, overflowX: 'auto' }}>{example}</Box>
                 <Box component="textarea" value={text} onChange={(e) => setText(e.target.value)} autoFocus spellCheck={false}
@@ -35,7 +35,7 @@ export default function PasteTargetsDialog({ open, onClose, parse, onApply, scop
                 {r ? (
                     <Stack spacing={1} sx={{ mt: 1.2 }} role="status">
                         <Typography sx={{ fontSize: 13.5, fontWeight: 800, color: r.cells.length ? AP.ok : AP.warn }}>
-                            {r.cells.length ? `Fills ${r.cells.length} cells · ${subs.length} sub-segment${subs.length === 1 ? '' : 's'} · ${scopes.map(scopeLabel).join(', ')}` : 'Nothing to fill yet.'}
+                            {r.cells.length ? `Fills ${r.cells.length} cells · ${groups.length} sub-segment × game type${groups.length === 1 ? '' : 's'} · ${scopes.map(scopeLabel).join(', ')}` : 'Nothing to fill yet.'}
                         </Typography>
                         {r.newPrices.length ? (
                             <Typography sx={{ fontSize: 12.5, color: AP.text }}>

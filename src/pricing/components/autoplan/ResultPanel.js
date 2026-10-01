@@ -48,7 +48,7 @@ export default function ResultPanel({
         if (!rep) return [];
         const list = (showBase ? rep.baseChanges || [] : rep.changes).map((c) => {
             const t = tableByKey.get(c.key) || {};
-            return { ...c, sub: t.sub || '', zone: t.zone || '', step: (tierIndex.get(c.to) ?? 0) - (tierIndex.get(c.from) ?? 0) };
+            return { ...c, sub: t.grp ? t.grp.replace('|', ' · ') : t.sub || '', zone: t.zone || '', step: (tierIndex.get(c.to) ?? 0) - (tierIndex.get(c.from) ?? 0) };
         });
         const get = { table: (r) => r.key, sub: (r) => `${r.sub}|${r.zone}`, from: (r) => tierIndex.get(r.from), to: (r) => tierIndex.get(r.to), step: (r) => r.step }[sort.key];
         return list.sort((a, b) => { const x = get(a), y = get(b); return (typeof x === 'string' ? x.localeCompare(y) : x - y) * sort.dir || a.key.localeCompare(b.key); });

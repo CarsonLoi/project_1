@@ -7,9 +7,9 @@
 // order (07 → 11 → … → 05, and the previous date's 05 → 07).
 
 import { CORE_HOURS, dayTypeOf, prevCore, lastCore } from './core';
-import { targetsForDate, manualFor, manualExemptFor } from './config';
+import { targetsForDate, manualFor, manualExemptFor, groupGame } from './config';
 import { fitToCount, fitToCaps, fitToFloors, foldToLadder } from './inputs';
-import { solveBlock, rulesFor, capsForSub, floorsForSub, diagnose, lowerBound, changesBetween, recentChanges, inScope } from './solver';
+import { solveBlock, rulesFor, capsForSub, floorsForSub, diagnose, lowerBound, changesBetween, recentChanges, inScope, groupOf } from './solver';
 import { getDaypartAssignments } from '../pricingStorage';
 import { readPrice } from '../pricingModel';
 
@@ -111,28 +111,68 @@ function blockInputs(ctx, date, dt, core) {
             if (r.exempt && r.exempt.length) exempt.set(t.key, r.exempt);
         }
     }
+    // Targets per mix group (sub-segment × game type).
     const targets = {};
-    for (const sub of Object.keys(ctx.ladders)) {
-        const n = tables.filter((t) => t.sub === sub).length;
+    for (const g of Object.keys(ctx.ladders)) {
+        const n = tables.filter((t) => groupOf(t) === g).length;
         // Locked tables exempt from a pod maximum sit on top of what it allows.
-        const caps = capsForSub(rules, tables, sub);
+        const caps = capsForSub(rules, tables, g);
         for (const t of tables) {
-            if (t.sub !== sub || !exempt.has(t.key) || !caps.has(pins.get(t.key))) continue;
+            if (groupOf(t) !== g || !exempt.has(t.key) || !caps.has(pins.get(t.key))) continue;
             caps.set(pins.get(t.key), caps.get(pins.get(t.key)) + 1);
         }
-        targets[sub] = planTargets({
-            stored: targetsForDate(ctx.cfg, date, dt, core, sub),
-            seeded: ((ctx.seededByDt[dt] || {})[core] || {})[sub],
-            openCount: n, ladder: ctx.ladders[sub],
-            caps, floors: floorsForSub(rules, tables, sub),
+        targets[g] = planTargets({
+            stored: targetsForDate(ctx.cfg, date, dt, core, g),
+            seeded: ((ctx.seededByDt[dt] || {})[core] || {})[g],
+            openCount: n, ladder: ctx.ladders[g],
+            caps, floors: floorsForSub(rules, tables, g),
             overflow: crit.overflow || 'down', tierIndex: ctx.tierIndex,
         });
     }
+    const fit = fitSharedPods({ targets, tables, rules, ladders: ctx.ladders, pins, exempt, overflow: crit.overflow || 'down', tierLabel: ctx.tierLabel });
     const current = ctx.stayClose ? (((ctx.currentByDate[date] || {})[core]) || null) : null;
     const shares = new Map();
     const sh = ctx.sharesByDt[dt] || new Map();
     for (const t of tables) { const e = sh.get(`${t.key}|${core}`); if (e) shares.set(t.key, e); }
-    return { tables, rules, targets, pins, current, shares, exempt };
+    return { tables, rules, targets: fit.targets, fitNotes: fit.notes, pins, current, shares, exempt };
+}
+
+// A sub-segment's game types share its pod maximums: when their targets at a
+// price add up to more than the pods allow (pods × max, plus exempt locked
+// tables), the excess moves one price down (up with overflow 'up') in the
+// game types with the most tables at that price, never below their locked ones.
+export function fitSharedPods({ targets, tables, rules, ladders, pins = new Map(), exempt = new Map(), overflow = 'down', tierLabel = (id) => id }) {
+    const out = Object.fromEntries(Object.entries(targets).map(([g, m]) => [g, { ...m }]));
+    const notes = [];
+    for (const sub of new Set(tables.map((t) => t.sub))) {
+        const ts = tables.filter((t) => t.sub === sub);
+        const groups = [...new Set(ts.map(groupOf))].filter((g) => out[g] && ladders[g]);
+        if (groups.length < 2) continue;
+        for (const r of rules) {
+            if (r.type !== 'zonecap' || r.maxOn === false || !ts.every((t) => inScope(t, r.scope))) continue;
+            const free = (t) => !(exempt.get(t.key) || []).some((x) => x === '*' || x === r.id);
+            const zones = new Set(ts.filter(free).map((t) => t.zone));
+            const extra = ts.filter((t) => !free(t) && pins.get(t.key) === r.tier).length;
+            const allow = zones.size * r.n + extra;
+            const lockedIn = (g) => ts.filter((t) => groupOf(t) === g && pins.get(t.key) === r.tier).length;
+            let over = groups.reduce((a, g) => a + (out[g][r.tier] || 0), 0) - allow;
+            if (over <= 0) continue;
+            const moved = {};
+            while (over > 0) {
+                const g = groups.filter((x) => (out[x][r.tier] || 0) > lockedIn(x))
+                    .sort((a, b) => (out[b][r.tier] || 0) - (out[a][r.tier] || 0) || (a < b ? -1 : 1))[0];
+                if (!g) break;
+                const lad = ladders[g], i = lad.indexOf(r.tier);
+                const to = overflow === 'up' ? (lad[i + 1] ?? lad[i - 1]) : (lad[i - 1] ?? lad[i + 1]);
+                if (i < 0 || to == null) break;
+                out[g][r.tier] -= 1; out[g][to] = (out[g][to] || 0) + 1;
+                moved[g] = (moved[g] || 0) + 1; over -= 1;
+            }
+            const parts = Object.entries(moved).map(([g, n]) => `${n} ${groupGame(g)}`);
+            if (parts.length) notes.push(`${sub}: ${parts.join(', ')} target table${Object.values(moved).reduce((a, b) => a + b, 0) === 1 ? '' : 's'} moved off ${tierLabel(r.tier)} to fit "max ${r.n} per pod" (shared by game types)`);
+        }
+    }
+    return { targets: out, notes };
 }
 
 function runBlock(ctx, inp, { parent, dir, weights, scale, recentChanged, night = null }) {
@@ -226,7 +266,7 @@ export function solveDate(ctx, date, opts) {
         else if (parentOf.get(prevCoreH) === core) lb = lowerBound(r.assign, results[prevCoreH].targets, inputs[prevCoreH].tables);
         else lb = lowerBound(prev, r.targets, inp.tables);
         report[core] = {
-            ok: r.ok, notes: r.notes, problems: problemsOf(ctx, inp, r), targets: r.targets,
+            ok: r.ok, notes: [...(inp.fitNotes || []), ...r.notes], problems: problemsOf(ctx, inp, r), targets: r.targets,
             changes: prev ? changesBetween(prev, r.assign) : [], lb,
             podOver: r.podOver || [],
             // Against the base plan (the old version being adjusted), when there is one.

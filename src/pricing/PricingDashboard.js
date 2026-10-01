@@ -74,6 +74,7 @@ import TuneIcon from '@mui/icons-material/Tune';
 import ResultPanel from './components/autoplan/ResultPanel';
 import ChangeStrip from './components/autoplan/ChangeStrip';
 import { CORE_HOURS, DAY_TYPES, coreFor, blockHours, prevCore } from './utils/autoplan/core';
+import { groupSub, groupGame } from './utils/autoplan/config';
 import { PRICING_FONTS } from './constants/fontSizes';
 
 const TB = PRICING_FONTS.toolbar;
@@ -320,7 +321,14 @@ export default function PricingDashboard() {
     const ap = useAutoPlan({ store, setStore, tiers, tables, active: autoMode });
     const [apTab, setApTab] = useState('targets');
     const [apScope, setApScope] = useState('wd');           // Targets: day type id or 'd:YYYY-MM-DD'
-    const [apSub, setApSub] = useState(null);
+    const [apGroup, setApGroup] = useState(null);         // Targets: mix group (sub-segment|game type)
+    // Mix groups in floor order: sub-segment, then game type.
+    const apGroups = useMemo(() => {
+        const order = sortSubSegments(Object.keys(ap.ladders));
+        const segOf = new Map(ap.tables.map((t) => [t.grp, t.segment]));
+        return ap.groups.filter((g) => ap.gLadders[g]).map((g) => ({ key: g, sub: groupSub(g), game: groupGame(g), segment: segOf.get(g) || '' }))
+            .sort((a, b) => order.indexOf(a.sub) - order.indexOf(b.sub) || (a.game < b.game ? -1 : a.game > b.game ? 1 : 0));
+    }, [ap.groups, ap.gLadders, ap.ladders, ap.tables]);
     const [applyOpen, setApplyOpen] = useState(false);
     const [apToast, setApToast] = useState('');
     // Planning: a paint prices the whole core-hour block (07–10 …) or only this hour.
@@ -1816,8 +1824,8 @@ export default function PricingDashboard() {
                             scope={apScope.startsWith('d:') && !ap.dates.includes(apScope.slice(2)) ? ap.dtOf(apScope.slice(2)) : apScope}
                             onScope={(sc) => { setApScope(sc); if (sc.startsWith('d:')) setDate(sc.slice(2)); }}
                             dates={ap.dates} dtOf={ap.dtOf}
-                            sub={apSub && ap.ladders[apSub] ? apSub : (sortSubSegments(Object.keys(ap.ladders))[0] || '')} onSub={setApSub}
-                            subs={sortSubSegments(Object.keys(ap.ladders))}
+                            group={apGroup && ap.gLadders[apGroup] ? apGroup : ((apGroups[0] || {}).key || null)} onGroup={setApGroup}
+                            groups={apGroups}
                             ladders={ap.ladders} historyLadders={ap.historyLadders} tiersAsc={ap.tiersAsc} tierIndex={ap.tierIndex} tierById={ap.tierById}
                             mixFor={ap.mixFor} openCountFor={ap.openCountFor} fitMix={ap.fitMix} onSeed={ap.seedDayType} priceSourceOf={ap.priceSourceOf}
                         />
@@ -1845,7 +1853,7 @@ export default function PricingDashboard() {
                             ladders={ap.ladders} tierById={ap.tierById}
                             histWindow={ap.history ? ap.history.window : null} rankWindow={ap.history ? ap.history.rankWindow : null}
                             refDate={ap.refDate} refLabel={ap.refDate ? `${DAY_TYPES.find((d) => d.id === ap.dtOf(ap.refDate))?.label || ''} ${ap.refDate}` : ''}
-                            breakdown={ap.rankBreakdown} mixFor={ap.mixFor} subs={sortSubSegments(ap.subs)} baseStrength={ap.base.source === 'none' ? 'none' : ap.base.strength}
+                            breakdown={ap.rankBreakdown} mixFor={ap.mixFor} subs={apGroups.map((g) => g.key)} rankLadders={ap.gLadders} baseStrength={ap.base.source === 'none' ? 'none' : ap.base.strength}
                             levels={Math.max(2, ...Object.values(ap.ladders).map((l) => l.length))}
                             stale={ap.stale} hasDraft={!!ap.draft} solving={ap.solving}
                             onSolve={() => { ap.solve(); if (!ap.dates.includes(date)) setDate(ap.dates[0]); }}

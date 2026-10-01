@@ -1,5 +1,5 @@
 // Auto-plan settings kept in the pricing store (store.autoplan): targets per
-// day type (or date) × core hour × sub-segment, rules, manual prices per
+// day type (or date) × core hour × mix group (sub-segment × game type), rules, manual prices per
 // date + block, day-type overrides, scoring weights, selection criteria and
 // the core hours.
 
@@ -199,6 +199,15 @@ export function mergeAutoplan(stored) {
     };
 }
 
+// ── Mix groups ───────────────────────────────────────────────────────
+// The target mix is set per sub-segment × game type: a baccarat table never
+// fills a blackjack target. Price lists stay per sub-segment.
+export const groupKey = (sub, game) => `${sub}|${game || '-'}`;
+export const groupSub = (g) => String(g).split('|')[0];
+export const groupGame = (g) => String(g).split('|')[1] || '';
+export const groupLabel = (g) => `${groupSub(g)} · ${groupGame(g)}`;
+export const isGroupKey = (g) => String(g).includes('|');
+
 export const targetsFor = (cfg, dt, core, sub) => (((cfg.targets || {})[dt] || {})[core] || {})[sub] || null;
 
 export function withTargets(cfg, dt, core, sub, map) {
@@ -257,17 +266,20 @@ export function withPrices(cfg, sub, ids, tiersAsc) {
     return { ...cfg, prices: { ...(cfg.prices || {}), [sub]: list } };
 }
 
-// Rewrites every saved target of one sub-segment onto a new price list.
+// Rewrites every saved target of one sub-segment (each of its game types)
+// onto a new price list.
 function foldSubTargets(cfg, sub, ladder, tierIndex) {
     const targets = {};
     let moved = 0;
     for (const [dt, byCore] of Object.entries(cfg.targets || {})) {
         targets[dt] = {};
-        for (const [core, bySub] of Object.entries(byCore)) {
-            targets[dt][core] = { ...bySub };
-            if (!bySub[sub]) continue;
-            for (const [id, n] of Object.entries(bySub[sub])) if (!ladder.includes(id)) moved += Number(n) || 0;
-            targets[dt][core][sub] = foldToLadder(bySub[sub], ladder, tierIndex);
+        for (const [core, byGroup] of Object.entries(byCore)) {
+            targets[dt][core] = { ...byGroup };
+            for (const [g, map] of Object.entries(byGroup)) {
+                if (groupSub(g) !== sub || !map) continue;
+                for (const [id, n] of Object.entries(map)) if (!ladder.includes(id)) moved += Number(n) || 0;
+                targets[dt][core][g] = foldToLadder(map, ladder, tierIndex);
+            }
         }
     }
     return { targets, moved };

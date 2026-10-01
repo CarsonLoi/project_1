@@ -331,14 +331,15 @@ export function fitToCaps(map, caps, ladder, overflow = 'down') {
     return { map: out, moved };
 }
 
-// Targets from what the open tables actually ran (day type, core hour).
+// Targets from what the open tables actually ran (day type, core hour),
+// per key of `ladders` (a mix group, or a sub-segment for older callers).
 export function seedTargets({ tables, openByCore, shares, ladders }) {
     const out = {};
     for (const core of CORE_HOURS) {
         out[core] = {};
         const open = openByCore.get(core) || new Set();
         for (const sub of Object.keys(ladders)) {
-            const ts = tables.filter((t) => t.sub === sub && open.has(t.key));
+            const ts = tables.filter((t) => (t.grp ?? t.sub) === sub && open.has(t.key));
             const w = {};
             let known = 0;
             for (const t of ts) {
@@ -347,7 +348,7 @@ export function seedTargets({ tables, openByCore, shares, ladders }) {
                 known += 1;
                 for (const [id, s] of Object.entries(e)) w[id] = (w[id] || 0) + s;
             }
-            // Tables without history take the sub-segment's average mix.
+            // Tables without history take the group's average mix.
             if (known && known < ts.length) for (const id of Object.keys(w)) w[id] *= ts.length / known;
             out[core][sub] = allocate(w, ts.length, ladders[sub]);
         }

@@ -1,10 +1,14 @@
 // Auto-plan — target mix to and from Excel (tab-separated cells).
 //
 // Layout (one header row, any column order):
-//   [Day type | Date]  Sub-segment  Price  07  11  13  15  21  03  05
-// The Day type / Date column is optional (the page's current scope is used)
-// and, like Sub-segment, may be left blank to repeat the row above.
-// Hours accept 7, 07, 07:00, 7am, 9pm, 21:00. Prices accept $1,000, 1000, 1k.
+//   [Date | Day of week]  [Segment]  Sub segment  Game type  Price  07  11  13  15  21  03  05
+// Targets are per sub-segment × game type: a game type's tables never fill
+// another game type's targets. The Date / Day of week column is optional
+// (the page's current scope is used); it, Sub segment and Game type may be
+// left blank to repeat the row above (merged cells). Day of week takes a
+// day type (Weekday, Friday …) or a weekday (Monday → its day type).
+// Segment is read for reference only. Hours accept 7, 07, 07:00, 7am, 9pm,
+// 21:00. Prices accept $1,000, 1000, 1k.
 
 const DT_ALIASES = {
     wd: ['wd', 'weekday', 'weekdays', 'mon-thu', 'mon–thu', 'mon to thu'],
@@ -31,11 +35,20 @@ function parsePrice(v) {
     return Number(m[1]) * (m[2] ? 1000 : 1);
 }
 
-function parseScope(v, dayTypes, dates) {
+const WEEKDAYS = [
+    ['sunday', 'sun'], ['monday', 'mon'], ['tuesday', 'tue', 'tues'], ['wednesday', 'wed'],
+    ['thursday', 'thu', 'thur', 'thurs'], ['friday', 'fri'], ['saturday', 'sat'],
+];
+
+// A day type id, 'd:YYYY-MM-DD', null (blank) or undefined (unreadable).
+// A day type's own name wins; another weekday maps through the week map.
+function parseScope(v, dayTypes, dates, dowMap) {
     const s = String(v ?? '').trim();
     if (!s) return null;
     const low = s.toLowerCase();
     for (const d of dayTypes) if ((DT_ALIASES[d.id] || [d.id]).includes(low) || d.label.toLowerCase() === low) return d.id;
+    const dow = WEEKDAYS.findIndex((names) => names.includes(low));
+    if (dow >= 0 && dowMap && dowMap[dow]) return dowMap[dow];
     let iso = null;
     const a = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
     const b = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
@@ -44,49 +57,79 @@ function parseScope(v, dayTypes, dates) {
     return iso && dates.includes(iso) ? `d:${iso}` : undefined;
 }
 
+// Header cell → column kind ('sub' before 'segment': "Sub segment" is a sub).
+function columnKind(h) {
+    const low = String(h).trim().toLowerCase().replace(/[^a-z]/g, '');
+    if (!low) return null;
+    if (low.startsWith('sub')) return 'sub';
+    if (low.includes('game')) return 'game';
+    if (low.startsWith('seg')) return 'segment';
+    if (/price|min|tier/.test(low)) return 'price';
+    if (/date|day|dow|week/.test(low)) return 'scope';
+    return null;
+}
+
 /**
- * @returns {{ cells: {scope, sub, tierId, core, n}[], newPrices: {sub, tierId}[], errors: string[] }}
+ * groups: [{ key, sub, game }] — the mix groups on the floor.
+ * @returns {{ cells: {scope, group, sub, tierId, core, n}[], newPrices: {sub, tierId}[], errors: string[] }}
  */
-export function parseTargetsPaste(text, { subs, tiers, coreHours, dayTypes, dates, scope, ladders }) {
+export function parseTargetsPaste(text, { groups, tiers, coreHours, dayTypes, dates, scope, ladders, dowMap = null }) {
     const errors = [], cells = [], newPrices = [];
     const rows = splitRows(text);
-    const hi = rows.findIndex((r) => r.some((c) => /sub|segment/i.test(c)) && r.some((c) => /price|min|tier/i.test(c)));
+    const hi = rows.findIndex((r) => r.some((c) => columnKind(c) === 'price') && r.some((c) => columnKind(c) === 'sub'));
     if (hi < 0) {
-        errors.push('Include the header row: Sub-segment, Price and the core hours (07, 11, 13 …).');
+        errors.push('Include the header row: Sub segment, Game type, Price and the core hours (07, 11, 13 …).');
         return { cells, newPrices, errors };
     }
-    const head = rows[hi];
-    const col = { scope: -1, sub: -1, price: -1 };
+    const col = { scope: -1, sub: -1, game: -1, price: -1 };
     const hourCols = [];
-    head.forEach((h, i) => {
+    rows[hi].forEach((h, i) => {
         const t = String(h).trim();
         const hour = parseHourToken(t);
         if (hour != null) {
             if (coreHours.includes(hour)) hourCols.push({ i, core: hour });
             else errors.push(`Column ${t} is not a core hour; it was skipped.`);
-        } else if (/sub|segment/i.test(t)) col.sub = i;
-        else if (/price|min|tier/i.test(t)) col.price = i;
-        else if (/day|date/i.test(t)) col.scope = i;
+            return;
+        }
+        const kind = columnKind(t);
+        if (kind && kind !== 'segment' && col[kind] < 0) col[kind] = i;
     });
-    const subByLow = new Map(subs.map((s) => [s.toLowerCase(), s]));
+    if (col.game < 0) {
+        errors.push('Include a Game type column: each game type has its own target mix.');
+        return { cells, newPrices, errors };
+    }
+    const subByLow = new Map(groups.map((g) => [g.sub.toLowerCase(), g.sub]));
+    const groupOf = new Map(groups.map((g) => [`${g.sub}|${String(g.game).toLowerCase()}`, g.key]));
     const tierByMin = new Map(tiers.map((t) => [Number(t.min), t.id]));
-    let lastSub = null, lastScope = scope;
+    // Two weekdays of one day type that disagree: the later row wins.
+    const seen = new Map();
+    const clash = new Set();
+    let lastSub = null, lastGame = null, lastScope = scope, lastScopeRaw = '';
     for (let ri = hi + 1; ri < rows.length; ri++) {
         const r = rows[ri];
         if (!r.some((c) => String(c).trim())) continue;
         const rowNo = ri + 1;
         if (col.scope >= 0 && String(r[col.scope] ?? '').trim()) {
-            const sc = parseScope(r[col.scope], dayTypes, dates);
-            if (!sc) { errors.push(`Row ${rowNo}: unknown day type or date "${String(r[col.scope]).trim()}".`); continue; }
+            const sc = parseScope(r[col.scope], dayTypes, dates, dowMap);
+            if (!sc) { errors.push(`Row ${rowNo}: unknown day or date "${String(r[col.scope]).trim()}".`); continue; }
             lastScope = sc;
+            lastScopeRaw = String(r[col.scope]).trim();
         }
         const subRaw = String(r[col.sub] ?? '').trim();
         if (subRaw) {
             const sub = subByLow.get(subRaw.toLowerCase());
             if (!sub) { errors.push(`Row ${rowNo}: unknown sub-segment "${subRaw}".`); lastSub = null; continue; }
+            if (sub !== lastSub) lastGame = null;
             lastSub = sub;
         }
         if (!lastSub) { errors.push(`Row ${rowNo}: no sub-segment.`); continue; }
+        const gameRaw = String(r[col.game] ?? '').trim();
+        if (gameRaw) {
+            const g = groupOf.get(`${lastSub}|${gameRaw.toLowerCase()}`);
+            if (!g) { errors.push(`Row ${rowNo}: ${lastSub} has no ${gameRaw} tables.`); lastGame = null; continue; }
+            lastGame = g;
+        }
+        if (!lastGame) { errors.push(`Row ${rowNo}: no game type.`); continue; }
         const priceRaw = String(r[col.price] ?? '').trim();
         const tierId = tierByMin.get(parsePrice(priceRaw));
         if (!tierId) { errors.push(`Row ${rowNo}: ${priceRaw || '(blank)'} is not a price level.`); continue; }
@@ -97,27 +140,38 @@ export function parseTargetsPaste(text, { subs, tiers, coreHours, dayTypes, date
             if (!v) continue;
             const n = Number(v.replace(/,/g, ''));
             if (!Number.isFinite(n) || n < 0) { errors.push(`Row ${rowNo}, ${two(core)}:00: "${v}" is not a number.`); continue; }
-            cells.push({ scope: lastScope, sub: lastSub, tierId, core, n: Math.round(n) });
+            const k = `${lastScope}|${lastGame}|${tierId}|${core}`;
+            const before = seen.get(k);
+            if (before && before.n !== Math.round(n) && before.raw !== lastScopeRaw && !clash.has(`${before.raw}|${lastScopeRaw}`)) {
+                clash.add(`${before.raw}|${lastScopeRaw}`);
+                errors.push(`${before.raw} and ${lastScopeRaw} are the same day type but have different numbers; ${lastScopeRaw} was used.`);
+            }
+            seen.set(k, { n: Math.round(n), raw: lastScopeRaw });
+            const at = cells.findIndex((c) => `${c.scope}|${c.group}|${c.tierId}|${c.core}` === k);
+            const cell = { scope: lastScope, group: lastGame, sub: lastSub, tierId, core, n: Math.round(n) };
+            if (at >= 0) cells[at] = cell; else cells.push(cell);
         }
     }
     return { cells, newPrices, errors };
 }
 
-// The same layout, for "Copy as Excel": every scope × sub-segment × price.
-export function formatTargetsTsv({ scopes, subs, coreHours, ladders, tierById, valueOf }) {
+// The same layout, for "Copy as Excel": every scope × mix group × price.
+// groups: [{ key, sub, game, segment }].
+export function formatTargetsTsv({ scopes, groups, coreHours, ladders, tierById, valueOf }) {
     const label = (id) => { const t = tierById.get(id); return t ? (t.label || `$${Number(t.min).toLocaleString('en-US')}`) : id; };
-    const lines = [['Day type', 'Sub-segment', 'Price', ...coreHours.map(two)].join('\t')];
+    const byDate = scopes.length && String(scopes[0].id).startsWith('d:');
+    const lines = [[byDate ? 'Date' : 'Day of week', 'Segment', 'Sub segment', 'Game type', 'Price', ...coreHours.map(two)].join('\t')];
     for (const s of scopes) {
-        for (const sub of subs) {
-            for (const id of [...(ladders[sub] || [])].reverse()) {
-                lines.push([s.label, sub, label(id), ...coreHours.map((c) => valueOf(s.id, sub, id, c) || 0)].join('\t'));
+        for (const g of groups) {
+            for (const id of [...(ladders[g.sub] || [])].reverse()) {
+                lines.push([s.label, g.segment || '', g.sub, g.game, label(id), ...coreHours.map((c) => valueOf(s.id, g.key, id, c) || 0)].join('\t'));
             }
         }
     }
     return lines.join('\n');
 }
 
-// ── One sub-segment's grid: a prices × core-hours block ──────────────
+// ── One mix group's grid: a prices × core-hours block ──────────────
 // Pasted into a cell of the Targets grid. Maps by price labels ($1,000 in
 // the first column) and hour headers (07, 21:00, 9pm) when present; a bare
 // block that is exactly prices × hours fills the whole grid; any other bare
